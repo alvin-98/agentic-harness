@@ -192,6 +192,8 @@ Requires-Dist: xgrammar==0.1.27
 Requires-Dist: xxhash==3.7.0
 Requires-Dist: yarl==1.23.0
 Requires-Dist: bitsandbytes>=0.49.2
+Requires-Dist: mcp[cli]>=1.27.1
+Requires-Dist: pyautogui>=0.9.54
 Provides-Extra: dev
 Requires-Dist: ipykernel; extra == "dev"
 Requires-Dist: pytest; extra == "dev"
