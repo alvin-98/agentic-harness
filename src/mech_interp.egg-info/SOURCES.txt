@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/mech_interp/run.py
+src/mech_interp.egg-info/PKG-INFO
+src/mech_interp.egg-info/SOURCES.txt
+src/mech_interp.egg-info/dependency_links.txt
+src/mech_interp.egg-info/requires.txt
+src/mech_interp.egg-info/top_level.txt
