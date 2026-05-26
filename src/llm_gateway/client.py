@@ -1,9 +1,8 @@
-"""Python client for LLM Gateway V2. Backward-compatible kwargs from V1; new
-kwargs (tools=, cache_system=, reasoning=, response_format=) are opt-in."""
+"""Python client for LLM Gateway V3. Adds auto_route kwarg on top of V2."""
 import os, json, httpx
 from typing import Any, Optional
 
-DEFAULT_URL = os.getenv("LLM_GATEWAY_V2_URL", "http://localhost:8100")
+DEFAULT_URL = os.getenv("LLM_GATEWAY_V3_URL", "http://localhost:8101")
 
 
 class LLM:
@@ -20,7 +19,8 @@ class LLM:
              tool_choice: Any = None,
              cache_system: Optional[bool] = None,
              reasoning: Optional[str] = None,
-             response_format: Any = None) -> dict:
+             response_format: Any = None,
+             auto_route: Optional[str] = None) -> dict:
         body = {
             "prompt": prompt, "messages": messages, "system": system,
             "provider": provider, "model": model,
@@ -28,6 +28,7 @@ class LLM:
             "tools": tools, "tool_choice": tool_choice,
             "cache_system": cache_system, "reasoning": reasoning,
             "response_format": response_format,
+            "auto_route": auto_route,
         }
         body = {k: v for k, v in body.items() if v is not None}
         r = httpx.post(f"{self.base_url}/v1/chat", json=body, timeout=self.timeout)

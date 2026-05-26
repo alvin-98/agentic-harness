@@ -14,13 +14,166 @@ load_dotenv(ROOT.parent / ".env")
 
 import db
 import providers as P
-from router import Router, LIMITS, SHORTCUTS, resolve
+from router import Router, RouterPool, DEFAULT_ROUTER_ORDER, LIMITS, SHORTCUTS, resolve
 from cache import GeminiCache
-from schemas import ChatRequest, ChatResponse, ToolCall
+from schemas import ChatRequest, ChatResponse, ToolCall, RouterDecision
 
 DEFAULT_ORDER = ["ollama", "gemini", "nvidia", "groq", "cerebras", "openrouter", "github"]
 ORDER = [x.strip() for x in os.getenv("LLM_ORDER", ",".join(DEFAULT_ORDER)).split(",") if x.strip()]
-PORT = int(os.getenv("GATEWAY_V2_PORT", "8100"))
+ROUTER_ORDER = [x.strip() for x in os.getenv("ROUTER_ORDER", ",".join(DEFAULT_ROUTER_ORDER)).split(",") if x.strip()]
+PORT = int(os.getenv("GATEWAY_V3_PORT", "8101"))
+
+# Tier -> worker failover order. TINY prefers small fast workers; LARGE prefers
+# long-context Gemini; HUGE is rejected (Summarizer Agent will live in V7).
+TIER_TO_ORDER = {
+    "TINY":  ["github", "openrouter", "groq", "nvidia", "cerebras", "gemini", "ollama"],
+    "LARGE": ["gemini", "groq", "nvidia", "cerebras", "github", "openrouter", "ollama"],
+}
+
+# Router envelope: cap the sample at ~800 chars (first 400 + last 400).
+# Keeps router input under 400 tokens regardless of worker payload size, so
+# routing decisions never burn through router quota on big prompts.
+ROUTER_SAMPLE_HEAD = 400
+ROUTER_SAMPLE_TAIL = 400
+ROUTER_PROMPT = (
+    "You are a routing classifier. Given a token_count and a content sample, "
+    "output exactly one of: TINY, LARGE, or HUGE.\n\n"
+    "Rules:\n"
+    "- TINY: token_count below 1000 with simple factual content.\n"
+    "- LARGE: token_count between 1000 and 8000, OR token_count below 1000 "
+    "but content is dense (code, base64, multilingual, technical).\n"
+    "- HUGE: token_count above 8000.\n\n"
+    "Output the single word and nothing else."
+)
+
+
+def _estimate_tokens(text: str) -> int:
+    """words * 1.4 — deliberately rough. The router sample handles the cases
+    where rough isn't good enough (code, CJK, base64)."""
+    return int(len(text.split()) * 1.4)
+
+
+def _build_sample(text: str) -> str:
+    if len(text) <= ROUTER_SAMPLE_HEAD + ROUTER_SAMPLE_TAIL + 10:
+        return text
+    return text[:ROUTER_SAMPLE_HEAD] + "\n...\n" + text[-ROUTER_SAMPLE_TAIL:]
+
+
+def _tier_from_count(tokens: int) -> str:
+    """Deterministic fallback when the router LLM is unreachable or replies
+    with garbage. Pure token-count rule, identical thresholds."""
+    if tokens > 8000:
+        return "HUGE"
+    if tokens >= 1000:
+        return "LARGE"
+    return "TINY"
+
+
+def _parse_tier(text: str) -> Optional[str]:
+    up = (text or "").upper()
+    for tier in ("HUGE", "LARGE", "TINY"):
+        if tier in up:
+            return tier
+    return None
+
+
+async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, prompt_text: str):
+    """Run a router-LLM classification. Returns a RouterDecision (without
+    chosen_worker_* fields, which are filled in by the caller after worker pick).
+
+    Failover: try each router provider in order. Only fall back to the
+    pure token-count rule when all routers in the pool have failed.
+    """
+    estimated = _estimate_tokens(prompt_text)
+
+    # Short-circuit HUGE — no need to spend a router call.
+    if estimated > 8000:
+        return RouterDecision(
+            role=role, tier="HUGE", estimated_tokens=estimated,
+            router_provider="(skipped)", router_model="(skipped)",
+            router_latency_ms=0, fallback_used=True,
+        )
+
+    sample = _build_sample(prompt_text)
+    envelope = f"token_count: {estimated}\nsample:\n{sample}"
+    call_role = f"router_{role}"
+
+    last_provider = ""
+    last_model = ""
+    last_latency = 0
+
+    for name in router_pool.candidates():
+        ok, why = router_pool.state[name].can_use(LIMITS[name], 400)
+        if not ok:
+            continue
+        provider = router_pool.providers[name]
+        t0 = time.time()
+        router_pool.state[name].record(0)
+        last_provider = name
+        last_model = provider.model
+        try:
+            result = await provider.chat(
+                messages=[{"role": "user", "content": envelope}],
+                system_blocks=ROUTER_PROMPT,
+                max_tokens=8, temperature=0,
+                model=None, tools=None, tool_choice=None,
+                reasoning="off", response_format=None,
+                cache_system=False,
+            )
+            latency = int((time.time() - t0) * 1000)
+            last_latency = latency
+            tokens = (result.get("input_tokens") or 0) + (result.get("output_tokens") or 0)
+            router_pool.state[name].tokens_today += tokens
+            router_pool.state[name].tokens_minute.append((time.time(), tokens))
+            tier = _parse_tier(result.get("text", ""))
+            # Sanity clamp: HUGE is only valid when the deterministic count
+            # agrees. Small router LLMs occasionally hallucinate HUGE on small
+            # inputs that look "dense" (URLs, JSON brackets, code fragments).
+            # The 8000-token ceiling is hard — override the LLM here to keep
+            # the request servable.
+            if tier == "HUGE" and estimated <= 8000:
+                tier = "LARGE"
+            if tier is None:
+                # Router returned text we couldn't classify — try the next router
+                # rather than giving up immediately. Log this attempt as a soft
+                # failure with the actual response captured.
+                db.log_call(provider=name, model=result.get("model", provider.model),
+                            input_tokens=result.get("input_tokens", 0),
+                            output_tokens=result.get("output_tokens", 0),
+                            latency_ms=latency, status="error",
+                            error=f"unparseable tier reply: {result.get('text','')[:100]}",
+                            prompt_chars=len(envelope),
+                            call_role=call_role, router_decision="unparseable")
+                continue
+            db.log_call(provider=name, model=result.get("model", provider.model),
+                        input_tokens=result.get("input_tokens", 0),
+                        output_tokens=result.get("output_tokens", 0),
+                        latency_ms=latency, status="ok",
+                        prompt_chars=len(envelope), response_chars=len(result.get("text", "")),
+                        call_role=call_role, router_decision=tier)
+            return RouterDecision(
+                role=role, tier=tier, estimated_tokens=estimated,
+                router_provider=name, router_model=result.get("model", provider.model),
+                router_latency_ms=latency, fallback_used=False,
+            )
+        except Exception as e:
+            latency = int((time.time() - t0) * 1000)
+            last_latency = latency
+            db.log_call(provider=name, model=provider.model,
+                        status="error", error=str(e)[:500],
+                        latency_ms=latency, call_role=call_role,
+                        router_decision="error")
+            # Move on to the next router. No backoff for routing — keep the
+            # router pool aggressive since each call is cheap.
+            continue
+
+    # All routers in the pool failed — deterministic token-count fallback.
+    return RouterDecision(
+        role=role, tier=_tier_from_count(estimated), estimated_tokens=estimated,
+        router_provider=last_provider or "(unavailable)",
+        router_model=last_model or "(unavailable)",
+        router_latency_ms=last_latency, fallback_used=True,
+    )
 
 
 @asynccontextmanager
@@ -29,10 +182,12 @@ async def lifespan(app: FastAPI):
     app.state.cache = GeminiCache(ttl_seconds=300)
     app.state.providers = P.build_providers(app.state.cache)
     app.state.router = Router(app.state.providers, ORDER)
+    app.state.router_providers = P.build_router_providers()
+    app.state.router_pool = RouterPool(app.state.router_providers, ROUTER_ORDER)
     yield
 
 
-app = FastAPI(title="LLM Gateway V2", lifespan=lifespan)
+app = FastAPI(title="LLM Gateway V3", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
@@ -111,6 +266,7 @@ def _validate_structured(text: str, schema: dict):
 @app.post("/v1/chat")
 async def chat(req: ChatRequest):
     router = app.state.router
+    router_pool = app.state.router_pool
     messages = _normalize_messages(req)
     system_blocks = _system_blocks(req)
     prompt_text = "".join(str(m.get("content", "")) for m in messages)
@@ -118,7 +274,28 @@ async def chat(req: ChatRequest):
     explicit_override = bool(req.provider)
     required_caps = _required_caps(req)
 
-    candidates = router.candidates(req.provider) if req.provider else list(router.order)
+    # V3: auto_route runs a router-LLM classifier first and uses tier-specific
+    # failover order. Explicit `provider` overrides routing (caller knows best).
+    router_decision: Optional[RouterDecision] = None
+    if req.auto_route and not req.provider:
+        router_decision = await _classify_tier(req, req.auto_route, router_pool, prompt_text)
+        if router_decision.tier == "HUGE":
+            raise HTTPException(
+                503,
+                {
+                    "error": "input exceeds 8000 tokens",
+                    "hint": "Use the Summarizer Agent (V7, not yet implemented). "
+                            "For now, chunk the input or set provider=g explicitly to try Gemini anyway.",
+                    "router_decision": router_decision.model_dump(),
+                },
+            )
+        # Replace failover order with the tier-specific one, intersected with
+        # what's actually wired in this gateway.
+        tier_order = TIER_TO_ORDER[router_decision.tier]
+        candidates = [p for p in tier_order if p in router.providers]
+    else:
+        candidates = router.candidates(req.provider) if req.provider else list(router.order)
+
     if req.provider and not candidates:
         raise HTTPException(400, f"unknown provider '{req.provider}'. Try one of: {list(router.providers)} or shortcuts {list(SHORTCUTS)}")
 
@@ -223,6 +400,9 @@ async def chat(req: ChatRequest):
             tokens = (result["input_tokens"] or 0) + (result["output_tokens"] or 0)
             router.state[name].tokens_today += tokens
             router.state[name].tokens_minute.append((time.time(), tokens))
+            if router_decision is not None:
+                router_decision.chosen_worker_provider = name
+                router_decision.chosen_worker_model = result["model"]
             db.log_call(provider=name, model=result["model"],
                         input_tokens=result["input_tokens"], output_tokens=result["output_tokens"],
                         cache_create_tokens=result["cache_creation_input_tokens"],
@@ -232,7 +412,9 @@ async def chat(req: ChatRequest):
                         override=req.provider, attempted=_attempts_str(all_attempts),
                         tool_calls=len(result["tool_calls"]),
                         reasoning_applied=result["reasoning_applied"],
-                        tool_dialect=result["tool_call_dialect"])
+                        tool_dialect=result["tool_call_dialect"],
+                        call_role="worker",
+                        router_decision=router_decision.tier if router_decision else None)
             return ChatResponse(
                 provider=name,
                 model=result["model"],
@@ -248,6 +430,7 @@ async def chat(req: ChatRequest):
                 reasoning_applied=result["reasoning_applied"],
                 parsed=parsed,
                 attempted=all_attempts,
+                router_decision=router_decision,
             ).model_dump()
 
         except P.ProviderError as e:
@@ -321,7 +504,24 @@ async def capabilities():
 @app.get("/v1/status")
 async def status():
     r = app.state.router
-    return {"order": r.order, "live": r.all_status(), "today": db.aggregate(), "limits": LIMITS}
+    return {"order": r.order, "live": r.all_status(),
+            "today": db.aggregate(call_role="worker"), "limits": LIMITS}
+
+
+@app.get("/v1/routers")
+async def routers():
+    """V3: router pool — separate from the worker pool. Shows which router LLMs
+    are wired, the failover order, and live rate-state."""
+    rp = app.state.router_pool
+    return {
+        "order": rp.order,
+        "providers": list(rp.providers.keys()),
+        "models": {n: p.model for n, p in rp.providers.items()},
+        "live": rp.all_status(),
+        "today": db.aggregate(call_role="router"),
+        "limits": {k: LIMITS[k] for k in rp.providers},
+        "tier_to_order": TIER_TO_ORDER,
+    }
 
 
 @app.get("/v1/calls")

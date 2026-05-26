@@ -151,3 +151,47 @@ class Router:
             out[name]["model"] = self.providers[name].model
             out[name]["capabilities"] = getattr(self.providers[name], "capabilities", {})
         return out
+
+
+# -----------------------------------------------------------------------------
+# V3 Router pool — separate failover ring for routing-decision LLM calls.
+# Same rate-state machinery, separate state dict so router quotas never compete
+# with worker quotas (provider keys are shared but providers meter per-model).
+# -----------------------------------------------------------------------------
+
+DEFAULT_ROUTER_ORDER = ["cerebras", "groq", "nvidia", "github"]
+
+
+class RouterPool:
+    """Failover ring for router-LLM calls. Mirrors `Router` but for the
+    Perception/Memory/Decision routing classifiers. Each call is logged with
+    a call_role marker (router_perception | router_memory | router_decision)
+    so the dashboard can show router activity separately from worker activity.
+    """
+    def __init__(self, providers: dict, order: list[str]):
+        self.providers = providers
+        self.order = [p for p in order if p in providers]
+        self.state = defaultdict(RateState)
+        self.lock = asyncio.Lock()
+
+    def candidates(self):
+        return list(self.order)
+
+    def pick(self, est_tokens=400):
+        """Pick first available router provider. Caps require nothing — router
+        LLMs only need to emit one word, no tools/reasoning/structured needed."""
+        attempts = []
+        for name in self.candidates():
+            limits = LIMITS[name]
+            ok, why = self.state[name].can_use(limits, est_tokens)
+            if ok:
+                return name, attempts
+            attempts.append({"provider": name, "reason": why})
+        return None, attempts
+
+    def all_status(self):
+        out = {}
+        for name in self.providers:
+            out[name] = self.state[name].snapshot(LIMITS[name])
+            out[name]["model"] = self.providers[name].model
+        return out

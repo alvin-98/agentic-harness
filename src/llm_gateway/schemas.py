@@ -1,4 +1,4 @@
-"""Pydantic v2 request/response models for llm_gatewayV2."""
+"""Pydantic v2 request/response models for llm_gatewayV3."""
 from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -53,6 +53,25 @@ class ChatRequest(BaseModel):
     reasoning: Optional[Literal["off", "low", "medium", "high"]] = None
     response_format: Optional[ResponseFormat] = None
 
+    # New in V3: when set, the gateway runs a router LLM first to pick a worker tier.
+    # Role labels track which cognitive layer is asking. The worker is picked
+    # from a tier-to-order table; router never sees system, tools, schemas.
+    auto_route: Optional[Literal["perception", "memory", "decision"]] = None
+
+
+class RouterDecision(BaseModel):
+    """What the router agent decided. Echoed back on the worker response so the
+    agentic-world caller can see which model was picked and why."""
+    role: Literal["perception", "memory", "decision"]
+    tier: Literal["TINY", "LARGE", "HUGE"]
+    estimated_tokens: int
+    router_provider: str
+    router_model: str
+    router_latency_ms: int
+    chosen_worker_provider: Optional[str] = None
+    chosen_worker_model: Optional[str] = None
+    fallback_used: bool = False  # true if router LLM failed and tier was decided by token-count rule
+
 
 class ChatResponse(BaseModel):
     provider: str
@@ -69,3 +88,5 @@ class ChatResponse(BaseModel):
     reasoning_applied: bool = False
     parsed: Optional[dict[str, Any]] = None  # set when response_format used
     attempted: list[dict[str, Any]] = Field(default_factory=list)
+    # New in V3: present only when auto_route was used
+    router_decision: Optional[RouterDecision] = None

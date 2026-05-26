@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>LLM Gateway V2 · Dashboard</title>
+<title>LLM Gateway V3 · Dashboard</title>
 <style>
   :root {
     --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #c9d1d9;
@@ -55,12 +55,13 @@
 </head>
 <body>
 <header>
-  <h1>⚡ LLM Gateway <span style="color:var(--accent)">V2</span> <span class="badge" id="port-badge"></span></h1>
+  <h1>⚡ LLM Gateway <span style="color:var(--accent)">V3</span> <span class="badge" id="port-badge"></span></h1>
   <nav>
     <a href="/">Dashboard</a>
     <a href="/help">Help / Free Keys</a>
     <a href="/v1/capabilities">API: capabilities</a>
     <a href="/v1/providers">API: providers</a>
+    <a href="/v1/routers">API: routers</a>
     <a href="/v1/status">API: status</a>
   </nav>
 </header>
@@ -68,12 +69,22 @@
   <h2>Failover order</h2>
   <div id="order" class="order-list">loading…</div>
 
-  <h2>Live providers <span style="float:right; font-size:11px; text-transform:none; letter-spacing:0; color:var(--muted)">cache+tool aware routing</span></h2>
+  <h2>Worker pool <span style="float:right; font-size:11px; text-transform:none; letter-spacing:0; color:var(--muted)">cache+tool aware routing</span></h2>
   <div id="providers" class="grid"></div>
 
-  <h2>Quick test (V2 features supported)</h2>
+  <h2>Router pool <span style="float:right; font-size:11px; text-transform:none; letter-spacing:0; color:var(--accent)">P/M/D classifiers — separate quotas, never touch worker RPMs</span></h2>
+  <div id="router-order" class="order-list" style="font-size:11px; margin-bottom:8px;">loading…</div>
+  <div id="routers" class="grid"></div>
+
+  <h2>Quick test (V3 features supported)</h2>
   <div class="test-area">
     <select id="test-prov"><option value="">auto (failover)</option></select>
+    <select id="test-route">
+      <option value="">no auto_route</option>
+      <option value="perception">auto_route=perception</option>
+      <option value="memory">auto_route=memory</option>
+      <option value="decision">auto_route=decision</option>
+    </select>
     <textarea id="test-prompt" placeholder="prompt…">Say hello in one short line.</textarea>
     <button onclick="runTest()">Send</button>
   </div>
@@ -89,8 +100,8 @@
   </h2>
   <table id="calls-table">
     <thead>
-      <tr><th>Time</th><th>Provider</th><th>Model</th><th>Status</th>
-      <th>In</th><th>Out</th><th>Cache (rd/wr)</th><th>Tools</th><th>Latency</th><th>Override</th><th>Error / Attempts</th></tr>
+      <tr><th>Time</th><th>Role</th><th>Provider</th><th>Model</th><th>Status</th>
+      <th>In</th><th>Out</th><th>Tier</th><th>Tools</th><th>Latency</th><th>Override</th><th>Error / Attempts</th></tr>
     </thead>
     <tbody></tbody>
   </table>
@@ -178,6 +189,43 @@ async function refresh() {
   });
 }
 
+async function refreshRouters() {
+  let r;
+  try { r = await fetch('/v1/routers').then(x => x.json()); }
+  catch (e) { return; }
+  document.getElementById('router-order').textContent = 'failover: ' + r.order.join(' → ');
+  const grid = document.getElementById('routers');
+  grid.innerHTML = '';
+  Object.keys(r.live).forEach(name => {
+    const s = r.live[name];
+    const today = (r.today && r.today[name]) || {};
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.borderLeft = '3px solid var(--accent)';
+    const cdLeft = s.cooldown_remaining > 0 ? ` <span class="pill err">cooldown ${s.cooldown_remaining.toFixed(1)}s</span>` : '';
+    const boLeft = s.backoff_remaining > 0 ? ` <span class="pill err" title="${s.backoff_reason}">backoff ${s.backoff_remaining.toFixed(0)}s</span>` : '';
+    card.innerHTML = `
+      <div class="name">${name} <span class="pill cap">router</span>${cdLeft}${boLeft}</div>
+      <div class="model">${s.model}</div>
+      <div style="margin-top:10px;">
+        <div class="row"><span>RPM</span><b>${s.rpm_used} / ${s.rpm_limit}</b></div>
+        <div class="bar"><div class="${barClass(s.rpm_used, s.rpm_limit)}" style="width:${Math.min(100, s.rpm_used/s.rpm_limit*100)}%"></div></div>
+      </div>
+      <div style="margin-top:8px;">
+        <div class="row"><span>RPD</span><b>${s.rpd_used} / ${s.rpd_limit}</b></div>
+        <div class="bar"><div class="${barClass(s.rpd_used, s.rpd_limit)}" style="width:${Math.min(100, s.rpd_used/s.rpd_limit*100)}%"></div></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <span class="stat">routing calls today <b>${today.calls || 0}</b></span>
+      </div>
+      <div class="row">
+        <span>Last call</span><b>${fmtAgo(s.last_call)}</b>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
 async function loadCalls() {
   const prov = document.getElementById('filter-prov').value;
   const stat = document.getElementById('filter-status').value;
@@ -190,14 +238,21 @@ async function loadCalls() {
   rows.forEach(c => {
     const tr = document.createElement('tr');
     const dt = new Date(c.ts * 1000).toLocaleTimeString();
+    const role = c.call_role || 'worker';
+    const isRouter = role.startsWith('router');
+    const roleBadge = isRouter
+      ? `<span class="pill cap" style="background:rgba(163,113,247,0.2);color:var(--accent)">${role.replace('router_','rt:')}</span>`
+      : `<span class="pill ok">worker</span>`;
+    const tier = c.router_decision ? `<span class="badge">${c.router_decision}</span>` : '—';
     tr.innerHTML = `
       <td>${dt}</td>
+      <td>${roleBadge}</td>
       <td class="prov">${c.provider}</td>
       <td>${c.model}</td>
       <td class="${c.status === 'ok' ? 'ok' : 'err'}">${c.status}</td>
       <td>${c.input_tokens || 0}</td>
       <td>${c.output_tokens || 0}</td>
-      <td>${(c.cache_read_tokens||0)} / ${(c.cache_create_tokens||0)}</td>
+      <td>${tier}</td>
       <td>${c.tool_calls || 0}${c.tool_dialect ? ' <span class="badge">'+c.tool_dialect+'</span>' : ''}</td>
       <td>${c.latency_ms}ms</td>
       <td>${c.override || '—'}</td>
@@ -210,28 +265,36 @@ async function loadCalls() {
 async function runTest() {
   const prompt = document.getElementById('test-prompt').value;
   const provider = document.getElementById('test-prov').value || null;
+  const auto_route = document.getElementById('test-route').value || null;
   const out = document.getElementById('test-out');
   out.textContent = '⏳ sending…';
   try {
+    const body = {prompt, provider, max_tokens: 200};
+    if (auto_route) body.auto_route = auto_route;
     const r = await fetch('/v1/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({prompt, provider, max_tokens: 200})
+      body: JSON.stringify(body)
     });
     const d = await r.json();
     if (!r.ok) {
-      out.textContent = '❌ ' + (d.detail || JSON.stringify(d));
+      out.textContent = '❌ ' + (typeof d.detail === 'object' ? JSON.stringify(d.detail, null, 2) : (d.detail || JSON.stringify(d)));
     } else {
-      out.textContent = `[${d.provider} · ${d.model} · ${d.latency_ms}ms · in=${d.input_tokens} out=${d.output_tokens} · cache_read=${d.cache_read_input_tokens||0} · dialect=${d.tool_call_dialect}]\n\n${d.text}`;
+      let header = `[${d.provider} · ${d.model} · ${d.latency_ms}ms · in=${d.input_tokens} out=${d.output_tokens} · cache_read=${d.cache_read_input_tokens||0} · dialect=${d.tool_call_dialect}]`;
+      if (d.router_decision) {
+        const rd = d.router_decision;
+        header += `\n[ROUTE ${rd.role} → ${rd.tier} (~${rd.estimated_tokens} tok) via ${rd.router_provider}/${rd.router_model} in ${rd.router_latency_ms}ms${rd.fallback_used ? ' · FALLBACK' : ''}]`;
+      }
+      out.textContent = `${header}\n\n${d.text}`;
     }
   } catch (e) {
     out.textContent = '❌ ' + e.message;
   }
-  refresh(); loadCalls();
+  refresh(); refreshRouters(); loadCalls();
 }
 
 document.getElementById('port-badge').textContent = 'port ' + location.port;
-loadCaps().then(() => { refresh(); loadCalls(); });
-setInterval(() => { refresh(); loadCalls(); }, 5000);
+loadCaps().then(() => { refresh(); refreshRouters(); loadCalls(); });
+setInterval(() => { refresh(); refreshRouters(); loadCalls(); }, 5000);
 </script>
 </body>
 </html>

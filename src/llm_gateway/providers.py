@@ -570,22 +570,57 @@ def _gemini_thinking_knob(model: str) -> Optional[str]:
 _GEMINI_BUDGETS = {"low": 2048, "medium": 8192, "high": 24576}
 
 
+def _gemini_inline_refs(schema: dict) -> dict:
+    """Resolve `$ref` references to `$defs` / `definitions` inline.
+
+    Pydantic emits refs for nested models. Gemini's responseSchema endpoint
+    rejects `$ref`, so we inline before cleaning. This must run BEFORE
+    `_gemini_clean_schema` (which strips `$defs`).
+    """
+    if not isinstance(schema, dict):
+        return schema
+    defs = dict(schema.get("$defs") or schema.get("definitions") or {})
+
+    def walk(node, seen: frozenset[str] = frozenset()) -> dict | list:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                target = node["$ref"]
+                name = None
+                if target.startswith("#/$defs/"):
+                    name = target.removeprefix("#/$defs/")
+                elif target.startswith("#/definitions/"):
+                    name = target.removeprefix("#/definitions/")
+                if name and name in defs and name not in seen:
+                    resolved = walk(defs[name], seen | {name})
+                    extras = {k: walk(v, seen) for k, v in node.items() if k != "$ref"}
+                    if isinstance(resolved, dict):
+                        return {**resolved, **extras}
+                    return resolved
+                # Unresolvable ref — drop it; Gemini would 400 anyway.
+                return {k: walk(v, seen) for k, v in node.items() if k != "$ref"}
+            return {k: walk(v, seen) for k, v in node.items()}
+        if isinstance(node, list):
+            return [walk(x, seen) for x in node]
+        return node
+
+    return walk(schema)  # type: ignore[return-value]
+
+
 def _gemini_clean_schema(schema: dict) -> dict:
-    """Strip JSON-Schema keys Gemini rejects (e.g. additionalProperties, $schema, title)."""
+    """Strip JSON-Schema keys Gemini rejects, after inlining `$ref` / `$defs`."""
+    schema = _gemini_inline_refs(schema)
     if not isinstance(schema, dict):
         return schema
     drop = {"additionalProperties", "$schema", "title", "definitions", "$defs", "examples", "default"}
-    out = {}
-    for k, v in schema.items():
-        if k in drop:
-            continue
-        if isinstance(v, dict):
-            out[k] = _gemini_clean_schema(v)
-        elif isinstance(v, list):
-            out[k] = [_gemini_clean_schema(x) if isinstance(x, dict) else x for x in v]
-        else:
-            out[k] = v
-    return out
+
+    def strip(node):
+        if isinstance(node, dict):
+            return {k: strip(v) for k, v in node.items() if k not in drop}
+        if isinstance(node, list):
+            return [strip(x) for x in node]
+        return node
+
+    return strip(schema)
 
 
 def _coerce_obj(v):
@@ -775,19 +810,60 @@ def model_capabilities(provider_name: str, model: str, default_caps: dict) -> di
 
 
 def build_providers(cache_store):
+    """Worker pool — the LLMs that do real work for the agent.
+
+    V3 changes vs V2:
+    - cerebras worker default: zai-glm-4.7 (was qwen-3-235b-a22b-instruct-2507, deprecating May 27 2026)
+    - groq worker default: openai/gpt-oss-120b (was llama-3.3-70b-versatile, now moved to router pool)
+    """
     out = {}
     if k := os.getenv("GEMINI_API_KEY"):
         out["gemini"] = GeminiProvider(k, os.getenv("GEMINI_MODEL", "gemini-2.5-flash"), cache_store)
     if k := os.getenv("NVIDIA_API_KEY"):
         out["nvidia"] = NvidiaProvider(k, os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-v3.2"))
     if k := os.getenv("GROQ_API_KEY"):
-        out["groq"] = GroqProvider(k, os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
+        out["groq"] = GroqProvider(k, os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"))
     if k := os.getenv("CEREBRAS_API_KEY"):
-        out["cerebras"] = CerebrasProvider(k, os.getenv("CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507"))
+        out["cerebras"] = CerebrasProvider(k, os.getenv("CEREBRAS_MODEL", "zai-glm-4.7"))
     if k := os.getenv("OPEN_ROUTER_API_KEY"):
         out["openrouter"] = OpenRouterProvider(k, os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"))
     if k := os.getenv("GITHUB_ACCESS_TOKEN"):
         out["github"] = GitHubProvider(k, os.getenv("GITHUB_MODEL", "openai/gpt-4.1-mini"))
     if om := os.getenv("OLLAMA_MODEL"):
         out["ollama"] = OllamaProvider(om, os.getenv("OLLAMA_URL", "http://localhost:11434"))
+    return out
+
+
+# V3 router pool — small/fast LLMs used only for routing decisions.
+# Separate from the worker pool: separate quotas, separate dashboard section,
+# separate per-call markers. Routers receive a bounded envelope (token_count +
+# 800-char sample) and emit a single word (TINY/LARGE/HUGE).
+ROUTER_DEFAULTS = {
+    # NOTE: On the test Cerebras account, gpt-oss-120b / zai-glm-4.7 / qwen-3-32b
+    # all 404 (no entitlement despite docs). Only llama3.1-8b and the deprecating
+    # qwen-3-235b respond. Using llama3.1-8b — small, fast, the natural router
+    # shape. *** DEPRECATES MAY 27, 2026 *** — must update ROUTER_CEREBRAS_MODEL
+    # before then, OR upgrade the Cerebras account to unlock gpt-oss-120b.
+    "cerebras": "llama3.1-8b",
+    "groq": "llama-3.3-70b-versatile",
+    "nvidia": "nvidia/llama-3.1-nemotron-nano-8b-v1",
+    "github": "microsoft/Phi-4-mini-instruct",
+}
+
+
+def build_router_providers():
+    """Router pool — same provider classes as workers, but separate instances
+    with router-specific (smaller/faster) model defaults. Uses the same API keys
+    as workers; per-provider rate budgets are independent because the providers
+    we picked (Cerebras, Groq, NVIDIA, GitHub) all meter per-model, not per-key.
+    """
+    out = {}
+    if k := os.getenv("CEREBRAS_API_KEY"):
+        out["cerebras"] = CerebrasProvider(k, os.getenv("ROUTER_CEREBRAS_MODEL", ROUTER_DEFAULTS["cerebras"]))
+    if k := os.getenv("GROQ_API_KEY"):
+        out["groq"] = GroqProvider(k, os.getenv("ROUTER_GROQ_MODEL", ROUTER_DEFAULTS["groq"]))
+    if k := os.getenv("NVIDIA_API_KEY"):
+        out["nvidia"] = NvidiaProvider(k, os.getenv("ROUTER_NVIDIA_MODEL", ROUTER_DEFAULTS["nvidia"]))
+    if k := os.getenv("GITHUB_ACCESS_TOKEN"):
+        out["github"] = GitHubProvider(k, os.getenv("ROUTER_GITHUB_MODEL", ROUTER_DEFAULTS["github"]))
     return out
