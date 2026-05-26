@@ -1,25 +1,3 @@
-"""
-agent5.py — Session 5 (2026) shape, paired side-by-side with agent.py.
-
-Same MCP server, same task (compute (a+b)+(c-d) for 4 numbers), but the
-loop is rebuilt on the upgrades V2 of the gateway exposes:
-
-  agent.py (Session 4 style)            agent5.py (Session 5 style)
-  ─────────────────────────────────     ─────────────────────────────────
-  prompted JSON + regex parser     →    native tool-use, no parser
-  hand-rolled normalize_action()   →    canonical tool_calls[] from gateway
-  8-turn few-shot scaffold         →    short system prompt only
-  list[dict] message history       →    Pydantic AgentTrace
-  sequential tool dispatch         →    asyncio.TaskGroup parallel dispatch
-  no system-prompt caching         →    cache_system=True (one flag)
-  no reasoning knob                →    reasoning="off" on executor
-  no verifier                      →    typed Pydantic Verdict via
-                                        response_format=
-  llm_gateway (V1, port 8099)      →    llm_gatewayV2     (port 8100)
-
-The MCP server (mcp_server.py) is unchanged — that's the point. Session 5
-keeps the server, changes the loop.
-"""
 
 import asyncio
 import json
@@ -34,13 +12,9 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # V2 client lives one level up
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "llm_gatewayV2"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "llm_gateway"))
 from client import LLM  # noqa: E402
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# Pydantic schemas — one source of truth for every boundary
-# ────────────────────────────────────────────────────────────────────────────
 
 class ToolDef(BaseModel):
     """Canonical tool envelope — what V2 expects on the request."""
@@ -95,10 +69,6 @@ class Verdict(BaseModel):
     reason: str
     final_answer: float
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# MCP ↔ V2 bridge (one function)
-# ────────────────────────────────────────────────────────────────────────────
 
 def mcp_tool_to_v2(t) -> dict:
     """The whole 'protocol bridge' between MCP and the gateway is this reshape."""
@@ -275,69 +245,62 @@ def verify(trace: AgentTrace, expected: float, executor_answer: str) -> Verdict:
 # Entrypoint
 # ────────────────────────────────────────────────────────────────────────────
 
-async def run(numbers: list[float], provider: str | None = "gr") -> None:
-    a, b, c, d = numbers
-    expected = (a + b) + (c - d)
-    user_task = (
-        f"Numbers: a={a}, b={b}, c={c}, d={d}. "
-        f"Compute (a + b) + (c - d). "
-        f"Note: (a+b) and (c-d) are independent — call both tools in parallel "
-        f"in your first turn if your API supports parallel tool calls."
-    )
+async def run(query: str) -> str:
+    ensure_gateway()
+    run_id = uuid.uuid4().hex
+    history: list[dict] = []
+    prior_goals: list[Goal] = []
 
-    print("═" * 78)
-    print(f"agent5.py — Session 5 native tool-use loop")
-    print(f"inputs   : a={a}  b={b}  c={c}  d={d}")
-    print(f"expected : ({a}+{b}) + ({c}-{d}) = {expected}")
-    print(f"provider : {provider or 'auto-failover'}")
-    print("═" * 78)
+    # Durable memory: classify the user's query so facts/preferences
+    # in it survive into future runs.
+    memory.remember(query, source="user_query", run_id=run_id)
 
-    server_params = StdioServerParameters(
-        command=sys.executable,
-        args=[str(Path(__file__).with_name("mcp_server.py"))],
-    )
+    async with mcp_session() as session:
+        mcp_tools = await load_tools(session)
+        tools = mcp_tools_for_decision(mcp_tools)
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            mcp_tools = (await session.list_tools()).tools
-            tools = [mcp_tool_to_v2(t) for t in mcp_tools]
-            print(f"[mcp] tools from server: {[t.name for t in mcp_tools]}")
+        for it in range(1, MAX_ITERATIONS + 1):
+            hits = memory.read(query, history)
+            obs = perception.observe(query, hits, history, prior_goals, run_id)
+            prior_goals = obs.goals
+            if obs.all_done:
+                break
 
-            trace = AgentTrace(goal=user_task)
+            goal = obs.next_unfinished()
+            attached = []
+            if goal.attach_artifact_id and artifacts.exists(goal.attach_artifact_id):
+                attached.append((
+                    goal.attach_artifact_id,
+                    artifacts.get_bytes(goal.attach_artifact_id),
+                ))
 
-            # ── Act ────────────────────────────────────────────────────────
-            answer = await run_native_loop(session, tools, user_task, trace, provider=provider)
-            print(f"\n[executor] answer: {answer!r}")
+            out = decision.next_step(goal, hits, attached, history, tools)
 
-            # ── Verify ─────────────────────────────────────────────────────
-            print("\n─── VERIFY (structured output) ─────────────────────────────────────")
-            verdict = verify(trace, expected, answer)
-            trace.add(kind="verdict", turn=0, payload=verdict.model_dump())
-            print(f"  passed       : {verdict.passed}")
-            print(f"  final_answer : {verdict.final_answer}")
-            print(f"  reason       : {verdict.reason}")
+            if out.is_answer:
+                history.append({"iter": it, "kind": "answer",
+                                "goal_id": goal.id, "text": out.answer})
+                continue
 
-            # ── Trace summary ─────────────────────────────────────────────
-            print("\n─── TRACE SUMMARY ──────────────────────────────────────────────────")
-            for k, v in trace.summary().items():
-                print(f"  {k:<22}: {v}")
-            print("\n─── EVENTS (Pydantic AgentTrace) ───────────────────────────────────")
-            for i, e in enumerate(trace.events):
-                line = e.model_dump(exclude_none=True)
-                # truncate noisy payloads
-                if "payload" in line and isinstance(line["payload"], dict):
-                    line["payload"] = {k: v for k, v in line["payload"].items() if v}
-                print(f"  #{i:02d} {line}")
+            result_text, art_id = await action.execute(session, out.tool_call)
+            memory.record_outcome(
+                tool_call=out.tool_call,
+                result_text=result_text,
+                artifact_id=art_id,
+                run_id=run_id,
+                goal_id=goal.id,
+            )
+            history.append({"iter": it, "kind": "action",
+                            "goal_id": goal.id, "tool": out.tool_call.name,
+                            "arguments": out.tool_call.arguments,
+                            "result_descriptor": result_text[:300],
+                            "artifact_id": art_id})
 
-            print("\n" + "═" * 78)
-            print(f"FINAL: {verdict.final_answer}  (passed={verdict.passed})")
-            print("═" * 78)
-
+    return final_answer_from(history)
 
 def main() -> None:
-    numbers = [10, 20, 30, 40]   # (10+20) + (30-40) = 20
-    asyncio.run(run(numbers, provider="gr"))   # groq llama-3.3-70b: native tools, parallel
+    query = "What is the capital of France?"
+    result = asyncio.run(run(query))
+    print(result)
 
 
 if __name__ == "__main__":
