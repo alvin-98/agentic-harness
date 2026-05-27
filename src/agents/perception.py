@@ -25,9 +25,7 @@ Objectives of Perception:
    not drop a goal.
 """
 
-from .memory import MemoryItem
-from .goal import Goal
-from .observation import Observation
+from .schemas import MemoryItem, Goal, Observation
 from client import LLM
 
 
@@ -56,9 +54,28 @@ class Perception:
         the user's query, the current memory hits, the run history, and the prior
         goal list to produce a fresh observation containing the current goals list
         with done flags and optional artifact attachments.
+        
+        Rules:
+        - Preserve goal order. Do not reorder, insert, or drop goals.
+        - Once a goal is marked done, it stays done.
+        - Only attach artifacts to the first unfinished goal.
         """
 
-        self._iteration = 0
+        self.CHECK_IF_ARTIFACT_NEEDED_PROMPT = """
+        Examine the goal and the available memory hits. Determine if this goal
+        requires raw bytes from a previously fetched artifact to proceed.
+        
+        Return true only if:
+        - The goal explicitly references content that exists in an artifact
+        - The artifact's descriptor indicates it contains data needed for this goal
+        
+        Return false if the goal can be accomplished without artifact data.
+        """
+
+
+    def reset(self) -> None:
+        """Reset perception state for a new run."""
+        pass
 
 
     def observe(self, query: str, hits: list[MemoryItem], history: list[dict], prior_goals: list[Goal], run_id: str) -> Observation:
@@ -77,17 +94,17 @@ class Perception:
         prior_goals: The prior goal list
         run_id: The run ID
         """
-        if self._iteration == 0:
+        if not prior_goals:
             goals = self._decompose_query(query)
-        
-            for goal in goals:
-                if not goal.done:
-                    # TODO: check if artifact is needed for this goal based on goals and hits  
-                    goal = self._attach_artifacts(goal, hits)
-                    # TODO: update goal back to goals list
         else:
             goals = self._update_goals(prior_goals, history)
-        self._iteration += 1
+        
+        # Attach artifact to the first unfinished goal only
+        for i, goal in enumerate(goals):
+            if not goal.done:
+                goals[i] = self._attach_artifacts(goal, hits)
+                break  # Only attach to first unfinished goal
+        
         return Observation(goals=goals)
 
 
@@ -112,7 +129,8 @@ class Perception:
             max_tokens=1024,
         )
         
-        return reply["parsed"]
+        obs = Observation.model_validate(reply["parsed"])
+        return obs.goals
 
 
     def _update_goals(self, goals: list[Goal], history: list[dict]) -> list[Goal]:
@@ -145,7 +163,8 @@ History:
             max_tokens=1024,
         )
         
-        return reply["parsed"]
+        obs = Observation.model_validate(reply["parsed"])
+        return obs.goals
 
 
     def _attach_artifacts(self, goal: Goal, hits: list[MemoryItem]) -> Goal:
@@ -212,4 +231,4 @@ Memory Hits:
             max_tokens=1024,
         )
         
-        return reply["parsed"]
+        return Goal.model_validate(reply["parsed"])
