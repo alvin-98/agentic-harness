@@ -2,6 +2,7 @@
 Durable memory for the agent.
 
 - Can add, read, filter, and clear memories.
+- Can use kind to tag and set automatic expiry dates, for example, scratchpad memories expire after run completes.
 - Memories can also be added with an expiry date.
 - Memories can be filtered by kind, goal_id, and recency.
 - Relevance of memory can be determined by query and history.
@@ -65,7 +66,7 @@ class Memory:
         df = df.append(memory_item.model_dump(), ignore_index=True)
         df.to_csv(CSV_FILE, index=False)
         
-    def read(self, query: str, history: list[dict], kinds: list[Kind] = ["fact"], top_k: int = 10) -> list[MemoryItem]:
+    def recollect(self, query: str, history: list[dict], kinds: list[Kind] = ["fact"], top_k: int = 10) -> list[MemoryItem]:
         """
         Read memories that are relevant to the query and history.
         
@@ -119,11 +120,44 @@ class Memory:
         print(reply) # need to check if reply returns a list of memories
         return 0
         
-    
-    def clear(self):
+    def edit(self, memory_id: str, new_content: str):
         """
-        Clear all memories.
+        Edit a memory.
+        
+        Args:
+            memory_id: The ID of the memory to edit.
+            new_content: The new content of the memory.
+        """
+        for memory in self.items:
+            if memory.id == memory_id:
+                memory.content = new_content
+                break
+
+    def delete(self, memory_id: str):
+        """
+        Delete a memory.
+        
+        Args:
+            memory_id: The ID of the memory to delete.
+        """
+        for memory in self.items:
+            if memory.id == memory_id:
+                self.items.remove(memory)
+                break
+
+    
+    def reset(self):
+        """
+        Reset all memories by clearing the CSV file.
         """
         self.items = []
+        
+
+    def restore(self):
+        """
+        Restore all memories from the CSV file.
+        """
+        self.items = pd.read_csv(CSV_FILE).to_dict(orient="records")
+
 
     

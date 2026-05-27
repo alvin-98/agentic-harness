@@ -13,7 +13,7 @@ from mcp.client.stdio import stdio_client
 
 # V2 client lives one level up
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "llm_gateway"))
-from client import LLM  # noqa: E402
+from client import LLM  
 
 
 class ToolDef(BaseModel):
