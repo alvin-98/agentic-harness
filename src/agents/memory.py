@@ -11,11 +11,22 @@ import os
 import uuid
 from datetime import datetime
 from .schemas import MemoryItem, Kind
-
+from client import LLM
 
 class Memory:
     def __init__(self):
         self.items: list[MemoryItem] = []
+
+    def __len__(self):
+        return len(self.items)
+
+
+    def __repr__(self):
+        return f"Memory(items={len(self.items)})"
+
+    def __str__(self):
+        return self.__repr__()
+
         
     def remember(self, query: str, source: str, run_id: uuid.UUID, expiry_date: datetime | None = datetime.max, kinds: Kind | list[Kind] = "fact"):
         """
@@ -66,7 +77,7 @@ class Memory:
         """
         # use the relevance function to rank memories by relevance to the query and history
         # return the top_k memories
-        pass
+        return self.relevant(query, kinds, top_k)
 
     def filter(self, query: str, kinds: list[Kind] = None, goal_id: str = None, recency: int = 10) -> list[MemoryItem]:
         """
@@ -78,8 +89,9 @@ class Memory:
             goal_id: The goal ID to filter by.
             recency: The recency of memories to filter by.
         """
-        # TODO: implement
-        return []
+        df = pd.read_csv(CSV_FILE)
+        df.filter() # TODO: implement filtering
+        return df.to_dict(orient="records")
 
     
     def relevant(self, query: str, kinds: list[Kind] = None, top_k: int = 10) -> list[MemoryItem]:
@@ -94,23 +106,24 @@ class Memory:
         # the relevance function ranks memories by relevance to the query
         # return the top_k memories
         # calls LLM to do the ranking, calls a ranking model ideally
-        pass
+        llm = LLM()
+        reply = llm.chat(
+            messages=messages,
+            system=SYSTEM_PROMPT,
+            cache_system=True,           # mark the system prompt cacheable
+            reasoning="off",             # executor stays cheap
+            provider=None,           # TODO: Check for ranking model and add
+            temperature=0,
+            max_tokens=1024,
+        )
+        print(reply) # need to check if reply returns a list of memories
+        return 0
         
     
     def clear(self):
         """
         Clear all memories.
         """
-        # TODO: implement
         self.items = []
 
-    def __len__(self):
-        return len(self.items)
-
-
-    def __repr__(self):
-        return f"Memory(items={len(self.items)})"
-
-    def __str__(self):
-        return self.__repr__()
-
+    
