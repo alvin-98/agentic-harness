@@ -24,9 +24,90 @@ contracts are documented in the server file itself. Decision sees these nine too
 picks one when external work is required.
 """
 
+import asyncio
+
+from mcp import ClientSession
+
+from .schemas import ToolCall
+from .artifacts import ArtifactStore, ARTIFACT_THRESHOLD_BYTES
+
+
 class Action:
     def __init__(self):
-        pass
+        self.artifact_store = ArtifactStore()
     
     async def execute(self, session: ClientSession, tool_call: ToolCall) -> tuple[str, str | None]:
-        pass
+        """
+        Execute a tool call and return (descriptor, artifact_id_or_none).
+        
+        - Guards against artifact handles being passed as paths/URLs.
+        - Stores large results (>4KB) in artifact store.
+        """
+        if self._contains_artifact_handle(tool_call.arguments):
+            error_msg = (
+                f"ERROR: Artifact handles (art:...) are not file paths or URLs. "
+                f"Do not pass them to {tool_call.name}. "
+                f"Artifact bytes appear under ATTACHED ARTIFACTS in the prompt."
+            )
+            return error_msg, None
+        
+        try:
+            result = await session.call_tool(tool_call.name, tool_call.arguments)
+        except Exception as e:
+            return f"ERROR: Tool execution failed: {str(e)}", None
+        
+        text = self._collapse_content(result)
+        text_bytes = text.encode("utf-8")
+        
+        if len(text_bytes) > ARTIFACT_THRESHOLD_BYTES:
+            artifact_id = self.artifact_store.put(
+                data=text_bytes,
+                source=tool_call.name,
+                content_type="text/plain",
+                descriptor=f"Result from {tool_call.name}",
+            )
+            preview = text[:200].replace("\n", " ")
+            descriptor = f"[artifact {artifact_id}, {len(text_bytes)} bytes] preview: {preview}..."
+            return descriptor, artifact_id
+        else:
+            return text, None
+
+    def _contains_artifact_handle(self, arguments: dict) -> bool:
+        """Check if any argument value starts with 'art:'."""
+        for key, value in arguments.items():
+            if isinstance(value, str) and value.startswith("art:"):
+                return True
+        return False
+
+    def _collapse_content(self, result) -> str:
+        """Collapse MCP result content blocks into a single string."""
+        if not result.content:
+            return ""
+        
+        parts = []
+        for block in result.content:
+            if hasattr(block, "text"):
+                parts.append(block.text)
+            elif hasattr(block, "data"):
+                parts.append(f"[binary data: {len(block.data)} bytes]")
+            else:
+                parts.append(str(block))
+        
+        return "\n".join(parts)
+
+    @staticmethod
+    async def dispatch_tool_calls(session: ClientSession, tool_calls: list[dict]) -> list[dict]:
+        """Dispatch multiple tool calls in parallel via TaskGroup."""
+        async def run_one(tc: dict) -> dict:
+            result = await session.call_tool(tc["name"], tc.get("arguments") or {})
+            text = result.content[0].text if result.content else ""
+            return {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "tool_name": tc["name"],
+                "content": text,
+            }
+
+        async with asyncio.TaskGroup() as tg:
+            tasks = [tg.create_task(run_one(tc)) for tc in tool_calls]
+        return [t.result() for t in tasks]

@@ -11,6 +11,21 @@ Most Decision calls land on the LARGE-tier Gemini model. Smaller Decision calls 
 land on TINY-tier workers. The router decision is visible in the gateway's response under router_decision, and on the dashboard at port 8101.
 """
 
+from typing import List, Optional, Any
+
+from pydantic import BaseModel, Field
+
+from .schemas import Goal, MemoryItem, DecisionOutput
+from client import LLM
+
+
+class ToolDef(BaseModel):
+    """Canonical tool envelope — what V2 expects on the request."""
+    name: str
+    description: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+
+
 class Decision:
     def __init__(self):
         """
@@ -28,15 +43,58 @@ class Decision:
         the answer must be substantive: at least three sentences or a list of items. This rule exists to prevent the model from 
         returning a meta-answer ("the page has been fetched, how would you like to proceed?") instead of doing the actual work the goal requires.
         """
-        self.DECISION_SYSTEM_PROMPT = """
-        TODO
-        """
+        self.llm = LLM()
+        self.DECISION_SYSTEM_PROMPT = """You are a decision module. Respond with exactly ONE of two outputs:
+1. A final ANSWER if you can satisfy the goal from the available context, OR
+2. A single TOOL CALL if external action is required.
+
+Rules:
+- Strings starting with "art:" are internal artifact handles, NOT file paths or URLs. Never pass them to tools like read_file or fetch_url. When artifact bytes are needed, they appear under ATTACHED ARTIFACTS.
+- When the goal asks for extraction, listing, comparison, or selection, your answer must be substantive: at least 3 sentences or a list of items. Do not return meta-answers like "the page has been fetched".
+- Pick exactly one tool. Do not narrate.
+"""
 
     def next_step(
+        self,
         goal: Goal,
         hits: List[MemoryItem],
         history: List[dict],
         attached: Optional[list[tuple[str, bytes]]] = None,
-        tools: Optional[List[Tool]] = None,
+        tools: Optional[List[ToolDef]] = None,
     ) -> DecisionOutput:
-        pass
+        """
+        Based on the goal, memory hits, history, attached artifacts, and available tools,
+        determine the next action to take or output the final answer.
+        """
+        prompt = f"""
+        Goal: {goal}
+        Memory hits: {hits}
+        History: {history}
+        Attached artifacts: {attached}
+        Tools: {tools}
+        """
+        reply = self.llm.chat(
+            prompt=prompt,
+            system=self.DECISION_SYSTEM_PROMPT,
+            cache_system=True,
+            response_format={
+                "type": "json_schema",
+                "schema": DecisionOutput.model_json_schema(),
+                "name": "DecisionOutput",
+                "strict": True,
+            },
+            reasoning="medium",
+            temperature=0,
+            max_tokens=1024,
+        )
+
+        return DecisionOutput.model_validate(reply["parsed"])
+    
+    @staticmethod
+    def mcp_tool_to_gateway(t) -> dict:
+        """The whole 'protocol bridge' between MCP and the gateway is this reshape."""
+        return ToolDef(
+            name=t.name,
+            description=t.description or "",
+            input_schema=t.inputSchema or {"type": "object", "properties": {}},
+        ).model_dump()
