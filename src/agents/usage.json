@@ -1,0 +1,11 @@
+{
+  "month": "2026-05",
+  "tavily": {
+    "count": 0,
+    "errors": 0
+  },
+  "duckduckgo": {
+    "count": 2,
+    "errors": 0
+  }
+}

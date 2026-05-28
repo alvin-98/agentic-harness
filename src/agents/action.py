@@ -30,6 +30,9 @@ from mcp import ClientSession
 
 from .schemas import ToolCall
 from .artifacts import ArtifactStore, ARTIFACT_THRESHOLD_BYTES
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class Action:
@@ -49,11 +52,18 @@ class Action:
                 f"Do not pass them to {tool_call.name}. "
                 f"Artifact bytes appear under ATTACHED ARTIFACTS in the prompt."
             )
+            logger.warning("artifact_handle_blocked",
+                          tool=tool_call.name,
+                          arguments=tool_call.arguments,
+                          error=error_msg)
             return error_msg, None
         
         try:
+            logger.debug("mcp_call_start", tool=tool_call.name, arguments=tool_call.arguments)
             result = await session.call_tool(tool_call.name, tool_call.arguments)
+            logger.debug("mcp_call_success", tool=tool_call.name)
         except Exception as e:
+            logger.error("mcp_call_failed", tool=tool_call.name, error=str(e), exc_info=True)
             return f"ERROR: Tool execution failed: {str(e)}", None
         
         text = self._collapse_content(result)
@@ -68,8 +78,13 @@ class Action:
             )
             preview = text[:200].replace("\n", " ")
             descriptor = f"[artifact {artifact_id}, {len(text_bytes)} bytes] preview: {preview}..."
+            logger.info("artifact_created",
+                       artifact_id=artifact_id,
+                       size_bytes=len(text_bytes),
+                       source=tool_call.name)
             return descriptor, artifact_id
         else:
+            logger.debug("result_inline", tool=tool_call.name, size_bytes=len(text_bytes))
             return text, None
 
     def _contains_artifact_handle(self, arguments: dict) -> bool:

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
 
@@ -11,17 +11,18 @@ class Kind(str, Enum):
 
 
 class MemoryItem(BaseModel):
-    id: str
+    should_store: bool = True
+    id: str = ""
     kind: Kind
     keywords: list[str]
     descriptor: str            # one short human-readable line
     value: dict                # structured payload
-    artifact_id: str | None    # handle into the artifact store
-    source: str
-    run_id: str
-    goal_id: str | None
+    artifact_id: str | None = None
+    source: str = ""
+    run_id: str = ""
+    goal_id: str | None = None
     confidence: float
-    created_at: datetime
+    created_at: datetime = Field(default_factory=datetime.now)
     expiry_date: datetime | None = None  # None means never expires
 
 

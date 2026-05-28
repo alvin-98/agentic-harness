@@ -171,7 +171,10 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
         except Exception:
             _bump("tavily", "errors")
     results = _ddg_search(query, max_results)
-    _bump("duckduckgo")
+    if results:
+        _bump("duckduckgo")
+    else:
+        _bump("duckduckgo", "errors")
     return results
 
 

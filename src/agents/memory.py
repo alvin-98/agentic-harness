@@ -9,15 +9,24 @@ Durable memory for the agent.
 """
 
 import os
+import sys
 import uuid
 import json
 import ast
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "llm_gateway"))
+
 from .schemas import MemoryItem, Kind
 from client import LLM
+from .logging_config import get_logger
+from . import config
+
+logger = get_logger(__name__)
 
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSV_FILE = os.path.join(PARENT_DIR, "memory.csv")
@@ -27,15 +36,16 @@ CSV_COLUMNS = [
     "source", "run_id", "goal_id", "confidence", "created_at", "expiry_date"
 ]
 
-RELEVANCE_SYSTEM_PROMPT = """You are a memory relevance ranker. Given a query and a list of memories, 
-return the IDs of the most relevant memories as a JSON list of strings, ordered by relevance (most relevant first).
-Only return the JSON list, nothing else."""
+RELEVANCE_SYSTEM_PROMPT = config.MEMORY_RELEVANCE_SYSTEM_PROMPT
+
+EXTRACTION_SYSTEM_PROMPT = config.MEMORY_EXTRACTION_SYSTEM_PROMPT
 
 
 class Memory:
     def __init__(self):
         self._ensure_csv_exists()
         self._cleanup_expired()
+        self.llm = LLM()
 
     def __len__(self):
         df = self._load_csv()
@@ -85,11 +95,8 @@ class Memory:
         if len(df_cleaned) < len(df):
             self._save_csv(df_cleaned)
 
-    def _df_to_memory_items(self, df: pd.DataFrame) -> list[MemoryItem]:
-        """Convert DataFrame rows to MemoryItem objects, filtering out expired."""
-        self._cleanup_expired()
-        df = self._load_csv()
-        
+    def _rows_to_items(self, df: "pd.DataFrame") -> list[MemoryItem]:
+        """Convert DataFrame rows to MemoryItem objects."""
         if df.empty:
             return []
         
@@ -125,6 +132,12 @@ class Memory:
         
         return items
 
+    def _df_to_memory_items(self) -> list[MemoryItem]:
+        """Load all non-expired memories from CSV."""
+        self._cleanup_expired()
+        df = self._load_csv()
+        return self._rows_to_items(df)
+
     def _delete_by_ids(self, ids: list[str]):
         """Delete memories by their IDs from the CSV."""
         df = self._load_csv()
@@ -136,6 +149,7 @@ class Memory:
         descriptor: str,
         source: str,
         run_id: str,
+        query: Optional[str] = None,
         expiry_date: datetime | None = None,
         kind: Kind = Kind.FACT,
         keywords: list[str] = None,
@@ -145,6 +159,9 @@ class Memory:
     ) -> str:
         """
         Add a memory to the agent's memory.
+        If you receive a user_query, you should parse it using an LLM 
+        and extract facts and preferences, and other relevant information 
+        to populate the descriptor, keywords, and value.
         
         Args:
             descriptor: Short human-readable description of the memory.
@@ -161,6 +178,39 @@ class Memory:
             The ID of the created memory.
         """
         memory_id = str(uuid.uuid4())
+        if query and source == "user_query":
+            messages = [{"role": "user", "content": f"Extract memory attributes from this user input:\n\n{query}"}]
+            _c = config.MEMORY_EXTRACTION_LLM
+            reply = self.llm.chat(
+                messages=messages,
+                system=EXTRACTION_SYSTEM_PROMPT,
+                cache_system=_c.cache_system,
+                reasoning=_c.reasoning,
+                provider=_c.provider,
+                model=_c.model,
+                temperature=_c.temperature,
+                max_tokens=_c.max_tokens,
+                auto_route=_c.auto_route,
+                response_format={
+                    "type": "json_schema",
+                    "schema": MemoryItem.model_json_schema(),
+                    "name": "MemoryItem",
+                    "strict": True,
+                },
+            )
+            try:
+                extracted = json.loads(reply["text"])
+                if not extracted.get("should_store", True):
+                    logger.debug("memory_skipped", source="user_query", reason="should_store_false")
+                    return None
+                kind = Kind(extracted.get("kind", "fact"))
+                keywords = extracted.get("keywords", keywords or [])
+                descriptor = extracted.get("descriptor", descriptor)
+                value = extracted.get("value", value or {})
+                confidence = float(extracted.get("confidence", confidence))
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass  # Use the original provided values if extraction fails
+            
         memory_item = MemoryItem(
             id=memory_id,
             kind=kind,
@@ -187,6 +237,11 @@ class Memory:
         df = pd.concat([df, pd.DataFrame([row_dict])], ignore_index=True)
         self._save_csv(df)
         
+        logger.info("memory_created",
+                   memory_id=memory_id,
+                   kind=kind.value if isinstance(kind, Kind) else kind,
+                   source=source,
+                   descriptor=descriptor[:100] if descriptor else None)
         return memory_id
 
     def recollect(self, query: str, history: list[dict] = None, kinds: list[Kind] = None, top_k: int = 10) -> list[MemoryItem]:
@@ -199,7 +254,7 @@ class Memory:
             kinds: The kinds of memories to read - fact, preference, tool_outcome, scratchpad.
             top_k: The number of memories to read.
         """
-        return self.relevant(query, kinds, top_k)
+        return self.relevant(query, kinds, top_k, history=history)
 
     def filter(
         self,
@@ -230,9 +285,9 @@ class Memory:
         if recency and recency > 0:
             df = df.head(recency)
         
-        return self._df_to_memory_items(df)
+        return self._rows_to_items(df)
 
-    def relevant(self, query: str, kinds: list[Kind] = None, top_k: int = 10) -> list[MemoryItem]:
+    def relevant(self, query: str, kinds: list[Kind] = None, top_k: int = 10, history: list[dict] = None) -> list[MemoryItem]:
         """
         Get relevant memories for a query using LLM ranking.
         
@@ -240,6 +295,7 @@ class Memory:
             query: The query to get relevant memories for.
             kinds: The kinds of memories to get - fact, preference, tool_outcome, scratchpad.
             top_k: The number of memories to get.
+            history: Recent agent history for additional context.
         """
         candidates = self.filter(kinds=kinds)
         
@@ -254,27 +310,41 @@ class Memory:
             for m in candidates
         ])
         
+        history_context = ""
+        if history:
+            recent = history[-5:]  # last 5 history entries for context
+            history_context = f"\n\nRecent history:\n{recent}"
+        
         messages = [{
             "role": "user",
-            "content": f"Query: {query}\n\nMemories:\n{memories_summary}\n\nReturn the top {top_k} most relevant memory IDs."
+            "content": f"Query: {query}{history_context}\n\nMemories:\n{memories_summary}\n\nReturn the top {top_k} most relevant memory IDs."
         }]
         
-        llm = LLM()
-        reply = llm.chat(
+        
+        _c = config.MEMORY_RELEVANCE_LLM
+        reply = self.llm.chat(
             messages=messages,
             system=RELEVANCE_SYSTEM_PROMPT,
-            cache_system=True,
-            reasoning="off",
-            provider=None,
-            temperature=0,
-            max_tokens=1024,
+            cache_system=_c.cache_system,
+            reasoning=_c.reasoning,
+            provider=_c.provider,
+            model=_c.model,
+            temperature=_c.temperature,
+            max_tokens=_c.max_tokens,
+            auto_route=_c.auto_route,
         )
         
         try:
-            relevant_ids = json.loads(reply.content if hasattr(reply, 'content') else str(reply))
+            relevant_ids = json.loads(reply["text"])
             id_to_memory = {m.id: m for m in candidates}
-            return [id_to_memory[mid] for mid in relevant_ids if mid in id_to_memory][:top_k]
+            result = [id_to_memory[mid] for mid in relevant_ids if mid in id_to_memory][:top_k]
+            logger.debug("memory_relevance_ranked",
+                        query=query[:100],
+                        candidates=len(candidates),
+                        returned=len(result))
+            return result
         except (json.JSONDecodeError, AttributeError):
+            logger.warning("memory_relevance_ranking_failed", query=query[:100])
             return candidates[:top_k]
 
     def edit(self, memory_id: str, descriptor: str = None, value: dict = None, keywords: list[str] = None):
@@ -323,7 +393,7 @@ class Memory:
         Get all non-expired memories.
         """
         df = self._load_csv()
-        return self._df_to_memory_items(df)
+        return self._rows_to_items(df)
 
     def read(self, query: str, history: list[dict] = None) -> list[MemoryItem]:
         """
@@ -385,5 +455,10 @@ class Memory:
         df = pd.concat([df, pd.DataFrame([row_dict])], ignore_index=True)
         self._save_csv(df)
         
+        logger.info("tool_outcome_recorded",
+                   memory_id=memory_id,
+                   tool_name=tool_call.name,
+                   goal_id=goal_id,
+                   has_artifact=artifact_id is not None)
         return memory_id
 

@@ -11,12 +11,21 @@ Most Decision calls land on the LARGE-tier Gemini model. Smaller Decision calls 
 land on TINY-tier workers. The router decision is visible in the gateway's response under router_decision, and on the dashboard at port 8101.
 """
 
+import sys
+import time
+from pathlib import Path
 from typing import List, Optional, Any
 
 from pydantic import BaseModel, Field
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "llm_gateway"))
+
 from .schemas import Goal, MemoryItem, DecisionOutput
 from client import LLM
+from .logging_config import get_logger
+from . import config
+
+logger = get_logger(__name__)
 
 
 class ToolDef(BaseModel):
@@ -44,15 +53,7 @@ class Decision:
         returning a meta-answer ("the page has been fetched, how would you like to proceed?") instead of doing the actual work the goal requires.
         """
         self.llm = LLM()
-        self.DECISION_SYSTEM_PROMPT = """You are a decision module. Respond with exactly ONE of two outputs:
-1. A final ANSWER if you can satisfy the goal from the available context, OR
-2. A single TOOL CALL if external action is required.
-
-Rules:
-- Strings starting with "art:" are internal artifact handles, NOT file paths or URLs. Never pass them to tools like read_file or fetch_url. When artifact bytes are needed, they appear under ATTACHED ARTIFACTS.
-- When the goal asks for extraction, listing, comparison, or selection, your answer must be substantive: at least 3 sentences or a list of items. Do not return meta-answers like "the page has been fetched".
-- Pick exactly one tool. Do not narrate.
-"""
+        self.DECISION_SYSTEM_PROMPT = config.DECISION_SYSTEM_PROMPT
 
     def next_step(
         self,
@@ -66,29 +67,70 @@ Rules:
         Based on the goal, memory hits, history, attached artifacts, and available tools,
         determine the next action to take or output the final answer.
         """
+        attached_text = ""
+        if attached:
+            parts = []
+            for art_id, art_bytes in attached:
+                try:
+                    text_content = art_bytes.decode("utf-8", errors="replace")[:8000]
+                except Exception:
+                    text_content = f"[binary artifact, {len(art_bytes)} bytes]"
+                parts.append(f"--- ARTIFACT {art_id} ---\n{text_content}")
+            attached_text = "\n".join(parts)
+
         prompt = f"""
-        Goal: {goal}
-        Memory hits: {hits}
-        History: {history}
-        Attached artifacts: {attached}
-        Tools: {tools}
-        """
+Goal: {goal.text}
+
+MEMORY HITS:
+{hits}
+
+HISTORY:
+{history}
+
+ATTACHED ARTIFACTS:
+{attached_text if attached_text else '(none)'}
+
+AVAILABLE TOOLS:
+{tools}
+"""
+        logger.debug("decision_llm_start",
+                    goal_id=goal.id,
+                    goal_text=goal.text,
+                    memory_hits=len(hits) if hits else 0,
+                    history_len=len(history) if history else 0,
+                    attached_count=len(attached) if attached else 0,
+                    tool_count=len(tools) if tools else 0)
+        
+        start_time = time.time()
+        _c = config.DECISION_LLM
         reply = self.llm.chat(
             prompt=prompt,
             system=self.DECISION_SYSTEM_PROMPT,
-            cache_system=True,
+            cache_system=_c.cache_system,
             response_format={
                 "type": "json_schema",
                 "schema": DecisionOutput.model_json_schema(),
                 "name": "DecisionOutput",
                 "strict": True,
             },
-            reasoning="medium",
-            temperature=0,
-            max_tokens=1024,
+            reasoning=_c.reasoning,
+            temperature=_c.temperature,
+            max_tokens=_c.max_tokens,
+            provider=_c.provider,
+            model=_c.model,
+            auto_route=_c.auto_route,
         )
+        duration_ms = int((time.time() - start_time) * 1000)
 
-        return DecisionOutput.model_validate(reply["parsed"])
+        output = DecisionOutput.model_validate(reply["parsed"])
+        logger.info("decision_llm_complete",
+                   goal_id=goal.id,
+                   duration_ms=duration_ms,
+                   is_answer=output.is_answer,
+                   tool_name=output.tool_call.name if output.tool_call else None,
+                   router_decision=reply.get("router_decision"))
+        
+        return output
     
     @staticmethod
     def mcp_tool_to_gateway(t) -> dict:
