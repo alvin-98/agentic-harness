@@ -325,7 +325,7 @@ class CerebrasProvider(OpenAICompatProvider):
 
 class NvidiaProvider(OpenAICompatProvider):
     name = "nvidia"
-    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True}
+    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True, "structured": False}
     def __init__(self, api_key, model):
         super().__init__(api_key, model, "https://integrate.api.nvidia.com/v1")
 
@@ -348,6 +348,16 @@ class GitHubProvider(OpenAICompatProvider):
     capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True}
     def __init__(self, api_key, model):
         super().__init__(api_key, model, "https://models.github.ai/inference")
+
+
+class SGLangProvider(OpenAICompatProvider):
+    name = "sglang"
+    capabilities = {
+        "tools": True, "caching": False, "reasoning": True,
+        "structured": True, "parallel_tools": True,
+    }
+    def __init__(self, api_key, model, base_url):
+        super().__init__(api_key, model, base_url)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -831,6 +841,12 @@ def build_providers(cache_store):
         out["github"] = GitHubProvider(k, os.getenv("GITHUB_MODEL", "openai/gpt-4.1-mini"))
     if om := os.getenv("OLLAMA_MODEL"):
         out["ollama"] = OllamaProvider(om, os.getenv("OLLAMA_URL", "http://localhost:11434"))
+    if sm := os.getenv("SGLANG_MODEL"):
+        out["sglang"] = SGLangProvider(
+            os.getenv("SGLANG_API_KEY", "sk-dummy"),
+            sm,
+            os.getenv("SGLANG_URL", "http://localhost:30000/v1"),
+        )
     return out
 
 
@@ -844,10 +860,10 @@ ROUTER_DEFAULTS = {
     # qwen-3-235b respond. Using llama3.1-8b — small, fast, the natural router
     # shape. *** DEPRECATES MAY 27, 2026 *** — must update ROUTER_CEREBRAS_MODEL
     # before then, OR upgrade the Cerebras account to unlock gpt-oss-120b.
-    "cerebras": "llama3.1-8b",
+    "cerebras": "gpt-oss-120b",
     "groq": "llama-3.3-70b-versatile",
-    "nvidia": "nvidia/llama-3.1-nemotron-nano-8b-v1",
     "github": "microsoft/Phi-4-mini-instruct",
+    "sglang": "Qwen/Qwen3.5-0.8B",
 }
 
 
@@ -862,8 +878,12 @@ def build_router_providers():
         out["cerebras"] = CerebrasProvider(k, os.getenv("ROUTER_CEREBRAS_MODEL", ROUTER_DEFAULTS["cerebras"]))
     if k := os.getenv("GROQ_API_KEY"):
         out["groq"] = GroqProvider(k, os.getenv("ROUTER_GROQ_MODEL", ROUTER_DEFAULTS["groq"]))
-    if k := os.getenv("NVIDIA_API_KEY"):
-        out["nvidia"] = NvidiaProvider(k, os.getenv("ROUTER_NVIDIA_MODEL", ROUTER_DEFAULTS["nvidia"]))
     if k := os.getenv("GITHUB_ACCESS_TOKEN"):
         out["github"] = GitHubProvider(k, os.getenv("ROUTER_GITHUB_MODEL", ROUTER_DEFAULTS["github"]))
+    if sm := os.getenv("SGLANG_MODEL"):
+        out["sglang"] = SGLangProvider(
+            os.getenv("SGLANG_API_KEY", "sk-dummy"),
+            os.getenv("ROUTER_SGLANG_MODEL", ROUTER_DEFAULTS["sglang"]),
+            os.getenv("SGLANG_URL", "http://localhost:30000/v1"),
+        )
     return out

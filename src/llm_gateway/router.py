@@ -7,7 +7,8 @@ from collections import deque, defaultdict
 
 LIMITS = {
     "ollama":     {"rpm": 9999, "rpd": 9999999, "tpm": 99999999, "cooldown": 0,   "max_ctx": 32000},
-    "cerebras":   {"rpm": 30,   "rpd": 9999,    "tpm": 60000,    "cooldown": 2,   "max_ctx": 8000,    "tokens_per_day": 1_000_000},
+    "sglang":     {"rpm": 9999, "rpd": 9999999, "tpm": 99999999, "cooldown": 0,   "max_ctx": 32000},
+    "cerebras":   {"rpm": 5,   "rpd": 2400,    "tpm": 30000,    "cooldown": 2,   "max_ctx": 8000,    "tokens_per_day": 1_000_000},
     "groq":       {"rpm": 30,   "rpd": 1000,    "tpm": 6000,     "cooldown": 2,   "max_ctx": 100000},
     "nvidia":     {"rpm": 40,   "rpd": 9999,    "tpm": 100000,   "cooldown": 2,   "max_ctx": 100000},
     "gemini":     {"rpm": 15,   "rpd": 1000,    "tpm": 250000,   "cooldown": 4,   "max_ctx": 1000000},
@@ -23,6 +24,7 @@ SHORTCUTS = {
     "c": "cerebras", "cer": "cerebras", "cerebras": "cerebras",
     "or": "openrouter", "opr": "openrouter", "openrouter": "openrouter",
     "gh": "github", "ghb": "github", "github": "github",
+    "sg": "sglang", "sgl": "sglang", "sglang": "sglang",
 }
 
 
@@ -159,7 +161,7 @@ class Router:
 # with worker quotas (provider keys are shared but providers meter per-model).
 # -----------------------------------------------------------------------------
 
-DEFAULT_ROUTER_ORDER = ["cerebras", "groq", "nvidia", "github"]
+DEFAULT_ROUTER_ORDER = ["cerebras", "groq", "github", "sglang"]  # nvidia excluded: no structured output support
 
 
 class RouterPool:

@@ -10,15 +10,15 @@ from fastapi.staticfiles import StaticFiles
 from jsonschema import Draft202012Validator, ValidationError
 
 ROOT = Path(__file__).parent
-load_dotenv(ROOT.parent / ".env")
-
+load_dotenv(ROOT.parent.parent / ".env")
+print(ROOT.parent.parent)
 import db
 import providers as P
 from router import Router, RouterPool, DEFAULT_ROUTER_ORDER, LIMITS, SHORTCUTS, resolve
 from cache import GeminiCache
 from schemas import ChatRequest, ChatResponse, ToolCall, RouterDecision
 
-DEFAULT_ORDER = ["ollama", "gemini", "nvidia", "groq", "cerebras", "openrouter", "github"]
+DEFAULT_ORDER = ["sglang", "ollama", "gemini", "nvidia", "groq", "cerebras", "openrouter", "github"]
 ORDER = [x.strip() for x in os.getenv("LLM_ORDER", ",".join(DEFAULT_ORDER)).split(",") if x.strip()]
 ROUTER_ORDER = [x.strip() for x in os.getenv("ROUTER_ORDER", ",".join(DEFAULT_ROUTER_ORDER)).split(",") if x.strip()]
 PORT = int(os.getenv("GATEWAY_V3_PORT", "8101"))
@@ -36,15 +36,27 @@ TIER_TO_ORDER = {
 ROUTER_SAMPLE_HEAD = 400
 ROUTER_SAMPLE_TAIL = 400
 ROUTER_PROMPT = (
-    "You are a routing classifier. Given a token_count and a content sample, "
-    "output exactly one of: TINY, LARGE, or HUGE.\n\n"
+    "You are a routing classifier. Classify requests by size.\n"
     "Rules:\n"
     "- TINY: token_count below 1000 with simple factual content.\n"
     "- LARGE: token_count between 1000 and 8000, OR token_count below 1000 "
     "but content is dense (code, base64, multilingual, technical).\n"
-    "- HUGE: token_count above 8000.\n\n"
-    "Output the single word and nothing else."
+    "- HUGE: token_count above 8000."
 )
+
+ROUTER_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "tier": {"type": "string", "enum": ["TINY", "LARGE", "HUGE"]}
+        },
+        "required": ["tier"],
+        "additionalProperties": False,
+    },
+    "name": "RouterDecision",
+    "strict": True,
+}
 
 
 def _estimate_tokens(text: str) -> int:
@@ -115,9 +127,9 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
             result = await provider.chat(
                 messages=[{"role": "user", "content": envelope}],
                 system_blocks=ROUTER_PROMPT,
-                max_tokens=8, temperature=0,
+                max_tokens=32, temperature=0,
                 model=None, tools=None, tool_choice=None,
-                reasoning="off", response_format=None,
+                reasoning="off", response_format=ROUTER_RESPONSE_FORMAT,
                 cache_system=False,
             )
             latency = int((time.time() - t0) * 1000)
@@ -125,7 +137,9 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
             tokens = (result.get("input_tokens") or 0) + (result.get("output_tokens") or 0)
             router_pool.state[name].tokens_today += tokens
             router_pool.state[name].tokens_minute.append((time.time(), tokens))
-            tier = _parse_tier(result.get("text", ""))
+            # Extract tier from structured output, fallback to text parsing
+            parsed = result.get("parsed")
+            tier = parsed.get("tier") if parsed else _parse_tier(result.get("text", ""))
             # Sanity clamp: HUGE is only valid when the deterministic count
             # agrees. Small router LLMs occasionally hallucinate HUGE on small
             # inputs that look "dense" (URLs, JSON brackets, code fragments).
