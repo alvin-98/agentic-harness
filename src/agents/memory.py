@@ -401,6 +401,66 @@ class Memory:
         """
         return self.recollect(query, history)
 
+    def _index_search_results(
+        self,
+        result_text: str,
+        query_args: dict,
+        run_id: str,
+        goal_id: str,
+    ) -> None:
+        """
+        Parse web_search JSON results and store each result as its own
+        memory item so downstream goals can reference concrete URLs
+        without the LLM having to dig through a JSON blob.
+        """
+        try:
+            results = json.loads(result_text)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(results, list):
+            return
+
+        search_query = query_args.get("query", "")
+        rows = []
+        for idx, item in enumerate(results, start=1):
+            title = item.get("title", "")
+            url = item.get("url", "")
+            snippet = item.get("snippet", "")
+            if not url:
+                continue
+
+            memory_id = str(uuid.uuid4())
+            mem = MemoryItem(
+                id=memory_id,
+                kind=Kind.SCRATCHPAD,
+                keywords=["search_result", "url", search_query],
+                descriptor=f"Search result #{idx} for '{search_query}': {title} — {url}",
+                value={"index": idx, "url": url, "title": title, "snippet": snippet},
+                artifact_id=None,
+                source="search_index",
+                run_id=run_id,
+                goal_id=goal_id,
+                confidence=1.0,
+                created_at=datetime.now(),
+                expiry_date=None,
+            )
+            row_dict = mem.model_dump()
+            row_dict["kind"] = row_dict["kind"].value if isinstance(row_dict["kind"], Kind) else row_dict["kind"]
+            row_dict["keywords"] = json.dumps(row_dict["keywords"])
+            row_dict["value"] = json.dumps(row_dict["value"])
+            row_dict["created_at"] = row_dict["created_at"].isoformat() if row_dict["created_at"] else None
+            row_dict["expiry_date"] = row_dict["expiry_date"].isoformat() if row_dict["expiry_date"] else None
+            rows.append(row_dict)
+
+        if rows:
+            df = self._load_csv()
+            df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+            self._save_csv(df)
+            logger.info("search_results_indexed",
+                       count=len(rows),
+                       query=search_query,
+                       goal_id=goal_id)
+
     def record_outcome(
         self,
         tool_call,
@@ -433,7 +493,7 @@ class Memory:
             value={
                 "tool_name": tool_call.name,
                 "arguments": tool_call.arguments,
-                "result_preview": result_text[:500],
+                "result": result_text,
             },
             artifact_id=artifact_id,
             source="action",
@@ -460,5 +520,14 @@ class Memory:
                    tool_name=tool_call.name,
                    goal_id=goal_id,
                    has_artifact=artifact_id is not None)
+
+        if tool_call.name == "web_search":
+            self._index_search_results(
+                result_text=result_text,
+                query_args=tool_call.arguments,
+                run_id=run_id,
+                goal_id=goal_id,
+            )
+
         return memory_id
 

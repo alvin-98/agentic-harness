@@ -128,6 +128,11 @@ AVAILABLE TOOLS:
                    duration_ms=duration_ms,
                    is_answer=output.is_answer,
                    tool_name=output.tool_call.name if output.tool_call else None,
+                   input_tokens=reply.get("input_tokens", 0),
+                   output_tokens=reply.get("output_tokens", 0),
+                   provider=reply.get("provider"),
+                   model=reply.get("model"),
+                   attempted=reply.get("attempted", []),
                    router_decision=reply.get("router_decision"))
         
         return output

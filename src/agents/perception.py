@@ -132,10 +132,29 @@ class Perception:
         )
         
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.debug("decompose_query_complete", duration_ms=duration_ms)
+        logger.info("perception_llm_complete",
+                    call="decompose_query",
+                    duration_ms=duration_ms,
+                    input_tokens=reply.get("input_tokens", 0),
+                    output_tokens=reply.get("output_tokens", 0),
+                    provider=reply.get("provider"),
+                    model=reply.get("model"),
+                    attempted=reply.get("attempted", []),
+                    router_decision=reply.get("router_decision"))
         
         obs = Observation.model_validate(reply["parsed"])
-        return obs.goals
+
+        # Overwrite LLM-generated IDs with deterministic sequential IDs.
+        # TINY-tier models often produce duplicates (e.g., all "?" or all "g").
+        goals = []
+        for idx, g in enumerate(obs.goals, start=1):
+            goals.append(Goal(
+                id=f"g::{idx}",
+                text=g.text,
+                done=False,
+                attach_artifact_id=None,
+            ))
+        return goals
 
 
     def _update_goals(self, goals: list[Goal], history: list[dict]) -> list[Goal]:
@@ -176,6 +195,15 @@ History:
         )
         
         duration_ms = int((time.time() - start_time) * 1000)
+        logger.info("perception_llm_complete",
+                    call="update_goals",
+                    duration_ms=duration_ms,
+                    input_tokens=reply.get("input_tokens", 0),
+                    output_tokens=reply.get("output_tokens", 0),
+                    provider=reply.get("provider"),
+                    model=reply.get("model"),
+                    attempted=reply.get("attempted", []),
+                    router_decision=reply.get("router_decision"))
         obs = Observation.model_validate(reply["parsed"])
         
         # Defensive merge: preserve original goals, only update done flags.
