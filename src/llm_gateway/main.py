@@ -16,7 +16,8 @@ import db
 import providers as P
 from router import Router, RouterPool, DEFAULT_ROUTER_ORDER, LIMITS, SHORTCUTS, resolve
 from cache import GeminiCache
-from schemas import ChatRequest, ChatResponse, ToolCall, RouterDecision
+from schemas import ChatRequest, ChatResponse, ToolCall, RouterDecision, EmbedRequest, EmbedResponse
+import embedders as E
 
 DEFAULT_ORDER = ["sglang", "ollama", "gemini", "nvidia", "groq", "cerebras", "openrouter", "github"]
 ORDER = [x.strip() for x in os.getenv("LLM_ORDER", ",".join(DEFAULT_ORDER)).split(",") if x.strip()]
@@ -221,6 +222,7 @@ async def lifespan(app: FastAPI):
     app.state.router = Router(app.state.providers, ORDER)
     app.state.router_providers = P.build_router_providers()
     app.state.router_pool = RouterPool(app.state.router_providers, ROUTER_ORDER)
+    app.state.embedders, app.state.embed_order = E.build_embedders()
     yield
 
 
@@ -506,6 +508,82 @@ async def chat(req: ChatRequest):
             continue
 
     raise HTTPException(503, f"all providers unavailable. attempts: {all_attempts}. last_error: {last_err}")
+
+
+@app.post("/v1/embed")
+async def embed(req: EmbedRequest):
+    """Single V7 endpoint. Failover ring runs nomic → configured fallback.
+    `provider` pins the choice (returns 502 on failure with no fallback).
+    Rejects inputs over MAX_INPUT_CHARS with 413 — caller must chunk."""
+    embedders = app.state.embedders
+    if not embedders:
+        raise HTTPException(503, "no embedding providers configured")
+
+    if len(req.text) > E.MAX_INPUT_CHARS:
+        raise HTTPException(
+            413,
+            f"text is {len(req.text)} chars; embed input is capped at "
+            f"{E.MAX_INPUT_CHARS} chars (~{E.MAX_INPUT_CHARS // 4} tokens). "
+            f"Chunk the input and embed each chunk.",
+        )
+
+    t0 = time.time()
+    try:
+        name, result, attempts, latency = await E.embed_with_failover(
+            embedders, req.text, req.task_type, explicit=req.provider
+        )
+    except E.EmbedderError as e:
+        latency = int((time.time() - t0) * 1000)
+        db.log_call(
+            provider=req.provider or "(any)",
+            model="(none)",
+            status="error",
+            error=str(e)[:500],
+            latency_ms=latency,
+            prompt_chars=len(req.text),
+            override=req.provider,
+            call_role="embed",
+        )
+        if req.provider:
+            if e.status == 429:
+                raise HTTPException(429, f"{req.provider} rate-limited: {e}")
+            if e.status == 400:
+                raise HTTPException(400, str(e))
+            raise HTTPException(502, f"{req.provider} embed failed: {e}")
+        raise HTTPException(503, str(e))
+
+    db.log_call(
+        provider=name,
+        model=result["model"],
+        status="ok",
+        latency_ms=latency,
+        prompt_chars=len(req.text),
+        override=req.provider,
+        attempted=_attempts_str(attempts),
+        call_role="embed",
+        embed_dim=result["dim"],
+    )
+    return EmbedResponse(
+        provider=name,
+        model=result["model"],
+        embedding=result["embedding"],
+        dim=result["dim"],
+        latency_ms=latency,
+        attempted=attempts,
+    ).model_dump()
+
+
+@app.get("/v1/embedders")
+async def list_embedders():
+    return {
+        "order": app.state.embed_order,
+        "models": {e.name: e.model for e in app.state.embedders},
+        "fixed_dim": E.EMBED_DIM,
+        "max_input_chars": E.MAX_INPUT_CHARS,
+        "backoff_steps_s": E.BACKOFF_STEPS,
+        "live": {e.name: e.state.snapshot() for e in app.state.embedders},
+        "today": db.aggregate(call_role="embed"),
+    }
 
 
 @app.get("/v1/providers")

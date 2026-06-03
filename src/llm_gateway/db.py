@@ -38,11 +38,16 @@ def init():
             reasoning_applied INTEGER DEFAULT 0,
             tool_dialect TEXT,
             call_role TEXT DEFAULT 'worker',
-            router_decision TEXT
+            router_decision TEXT,
+            embed_dim INTEGER
         )""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_ts ON calls(ts DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_prov_ts ON calls(provider, ts DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_role_ts ON calls(call_role, ts DESC)")
+        # Add embed_dim column if upgrading from a pre-V7 schema.
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(calls)").fetchall()}
+        if "embed_dim" not in cols:
+            c.execute("ALTER TABLE calls ADD COLUMN embed_dim INTEGER")
 
 
 def log_call(provider, model, input_tokens=0, output_tokens=0, latency_ms=0,
@@ -50,20 +55,20 @@ def log_call(provider, model, input_tokens=0, output_tokens=0, latency_ms=0,
              override=None, attempted=None,
              cache_create_tokens=0, cache_read_tokens=0,
              tool_calls=0, reasoning_applied=False, tool_dialect=None,
-             call_role="worker", router_decision=None):
+             call_role="worker", router_decision=None, embed_dim=None):
     with conn() as c:
         c.execute(
             """INSERT INTO calls (ts, provider, model, input_tokens, output_tokens,
                                   cache_create_tokens, cache_read_tokens,
                                   latency_ms, status, error, prompt_chars, response_chars,
                                   override, attempted, tool_calls, reasoning_applied, tool_dialect,
-                                  call_role, router_decision)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                  call_role, router_decision, embed_dim)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (time.time(), provider, model, input_tokens, output_tokens,
              cache_create_tokens, cache_read_tokens, latency_ms,
              status, error, prompt_chars, response_chars,
              override, attempted, tool_calls, 1 if reasoning_applied else 0, tool_dialect,
-             call_role, router_decision),
+             call_role, router_decision, embed_dim),
         )
 
 

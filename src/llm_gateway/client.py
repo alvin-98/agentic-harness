@@ -70,6 +70,17 @@ class LLM:
     def capabilities(self):
         return httpx.get(f"{self.base_url}/v1/capabilities", timeout=30).json()
 
+    def embed(self, text: str,
+              task_type: str = "retrieval_document",
+              provider: Optional[str] = None) -> dict:
+        """Returns {provider, model, embedding, dim, latency_ms, attempted}."""
+        body = {"text": text, "task_type": task_type}
+        if provider:
+            body["provider"] = provider
+        r = httpx.post(f"{self.base_url}/v1/embed", json=body, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
 
 def ask(prompt: str, provider: str = None, **kw) -> str:
     return LLM().chat(prompt, provider=provider, **kw)["text"]

@@ -74,6 +74,24 @@ class RouterDecision(BaseModel):
     router_attempts: list[dict[str, Any]] = Field(default_factory=list)  # each attempted router with outcome
 
 
+class EmbedRequest(BaseModel):
+    """Request for POST /v1/embed. The model is fixed per deployment (see
+    README); only the text, task type, and an optional explicit provider
+    are caller-controlled."""
+    text: str
+    task_type: Literal["retrieval_document", "retrieval_query"] = "retrieval_document"
+    provider: Optional[str] = None  # "nomic" | configured fallback name
+
+
+class EmbedResponse(BaseModel):
+    provider: str
+    model: str
+    embedding: list[float]
+    dim: int
+    latency_ms: int = 0
+    attempted: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     provider: str
     model: str
