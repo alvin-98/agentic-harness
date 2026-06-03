@@ -95,12 +95,31 @@ Rules:
 
 DECOMPOSE_QUERY_PROMPT = """
 Decompose the user's query into one or more bounded goals, each a short imperative statement.
+
+Rules for decomposition:
+- Each goal must map to exactly ONE tool call or ONE final synthesis/answer.
+- Never combine "search" and "read/fetch" into the same goal. Searching returns
+  snippets; reading/fetching retrieves the full page content. These are separate actions.
+- If the query says "read the top N results", emit N separate fetch goals
+  (e.g., "Fetch the full content of result 1 from the search").
+- Ordering matters: search goals before fetch goals, fetch goals before
+  summarise/compare/answer goals.
+- Keep goal text concise but unambiguous about what action is required.
 """
 
 UPDATE_GOALS_PROMPT = """
 For each prior goal, examine the run history. Mark the goal `done: true`
-the moment the history contains an action or answer that satisfies it. Once done,
-the goal remains done in every subsequent iteration.
+the moment the history contains an action or answer that **fully** satisfies it.
+Once done, the goal remains done in every subsequent iteration.
+
+Before marking a goal done, verify:
+- Every verb/action in the goal text has a matching completed action in the history.
+- "Search" is satisfied by a web_search action. "Read" or "Fetch" is satisfied
+  only by a fetch_url action for the relevant URL — a search snippet alone does NOT
+  satisfy a read/fetch goal.
+- If the goal mentions a quantity (e.g., "top 3 results"), the history must contain
+  that many matching actions.
+- If in doubt, leave the goal as not done.
 """
 
 ATTACH_ARTIFACT_PROMPT = """
