@@ -214,6 +214,8 @@ async def run(query: str) -> str:
                             iteration=it,
                             duration_ms=int((time.time() - iter_start) * 1000))
 
+        memory.expire_run(run_id)
+
         final = final_answer_from(history)
         logger.info("run_complete",
                    total_iterations=len([h for h in history if h.get("kind") in ("action", "answer")]),

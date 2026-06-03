@@ -395,6 +395,28 @@ class Memory:
         df = self._load_csv()
         return self._rows_to_items(df)
 
+    def expire_run(self, run_id: str) -> int:
+        """
+        Mark all TOOL_OUTCOME and SCRATCHPAD memories for a given run as expired.
+        They will be removed on the next _cleanup_expired() call.
+
+        Returns the number of entries expired.
+        """
+        df = self._load_csv()
+        if df.empty:
+            return 0
+
+        run_scoped_kinds = {Kind.TOOL_OUTCOME.value, Kind.SCRATCHPAD.value}
+        mask = (df["run_id"].astype(str) == str(run_id)) & (df["kind"].isin(run_scoped_kinds))
+        count = int(mask.sum())
+
+        if count:
+            df.loc[mask, "expiry_date"] = datetime.now().isoformat()
+            self._save_csv(df)
+            logger.info("run_memories_expired", run_id=run_id, count=count)
+
+        return count
+
     def read(self, query: str, history: list[dict] = None) -> list[MemoryItem]:
         """
         Alias for recollect - read memories relevant to the query and history.
