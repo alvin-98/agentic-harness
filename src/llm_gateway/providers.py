@@ -224,6 +224,15 @@ class OpenAICompatProvider(BaseProvider):
                     r = await c.post(f"{self.base_url}/chat/completions", headers=self._headers(), json=body)
                 if r.status_code != 200 and "json_schema" in (body.get("response_format") or {}).get("type", ""):
                     body["response_format"] = {"type": "json_object"}
+                    # Some providers (e.g. Groq) require "json" in messages
+                    # when using json_object response_format.
+                    msgs = body.get("messages", [])
+                    has_json_word = any("json" in (m.get("content", "") or "").lower() for m in msgs)
+                    if not has_json_word and msgs:
+                        if msgs[0]["role"] == "system":
+                            msgs[0]["content"] = (msgs[0].get("content") or "") + "\nRespond in JSON format."
+                        else:
+                            msgs.insert(0, {"role": "system", "content": "Respond in JSON format."})
                     r = await c.post(f"{self.base_url}/chat/completions", headers=self._headers(), json=body)
                 if r.status_code != 200:
                     raise ProviderError(
@@ -255,6 +264,15 @@ class OpenAICompatProvider(BaseProvider):
             stop_norm = "tool_use" if tool_calls_out else (
                 "max_tokens" if stop == "length" else "end_turn"
             )
+            # Parse structured output JSON if response_format was json_schema
+            parsed = None
+            if response_format and text:
+                rf = response_format if isinstance(response_format, dict) else response_format.model_dump(by_alias=True)
+                if rf.get("type") == "json_schema" or rf.get("schema"):
+                    try:
+                        parsed = json.loads(text)
+                    except Exception:
+                        pass
             return {
                 "text": text or "",
                 "tool_calls": tool_calls_out,
@@ -266,6 +284,7 @@ class OpenAICompatProvider(BaseProvider):
                 "model": m,
                 "tool_call_dialect": "native",
                 "reasoning_applied": reasoning_applied,
+                "parsed": parsed,
             }
 
     async def stream(self, messages, *, max_tokens=2048, temperature=0.7, model=None,
@@ -311,7 +330,7 @@ class OpenAICompatProvider(BaseProvider):
 
 class GroqProvider(OpenAICompatProvider):
     name = "groq"
-    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True}
+    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True, "structured": False}
     def __init__(self, api_key, model):
         super().__init__(api_key, model, "https://api.groq.com/openai/v1")
 
@@ -507,6 +526,10 @@ class GeminiProvider(BaseProvider):
                         cache_name = None
                         cache_read_tokens = 0
                     r = await c.post(url, json=body)
+                if r.status_code != 200 and "response_schema" in r.text.lower():
+                    # Schema still rejected — fall back to plain JSON mode.
+                    body["generationConfig"].pop("responseSchema", None)
+                    r = await c.post(url, json=body)
                 if r.status_code != 200:
                     raise ProviderError(
                         f"gemini HTTP {r.status_code}: {r.text[:400]}",
@@ -625,7 +648,19 @@ def _gemini_clean_schema(schema: dict) -> dict:
 
     def strip(node):
         if isinstance(node, dict):
-            return {k: strip(v) for k, v in node.items() if k not in drop}
+            out = {}
+            for k, v in node.items():
+                if k in drop:
+                    continue
+                if k == "type" and isinstance(v, list):
+                    # Convert ["string", "null"] → type: "string", nullable: true
+                    types = [t for t in v if t != "null"]
+                    out["type"] = types[0] if types else "string"
+                    if "null" in v:
+                        out["nullable"] = True
+                else:
+                    out[k] = strip(v)
+            return out
         if isinstance(node, list):
             return [strip(x) for x in node]
         return node

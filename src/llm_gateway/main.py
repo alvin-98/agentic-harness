@@ -26,8 +26,8 @@ PORT = int(os.getenv("GATEWAY_V3_PORT", "8101"))
 # Tier -> worker failover order. TINY prefers small fast workers; LARGE prefers
 # long-context Gemini; HUGE is rejected (Summarizer Agent will live in V7).
 TIER_TO_ORDER = {
-    "TINY":  ["github", "openrouter", "groq", "nvidia", "cerebras", "gemini", "ollama"],
-    "LARGE": ["gemini", "groq", "nvidia", "cerebras", "github", "openrouter", "ollama"],
+    "TINY":  ["github", "openrouter", "nvidia", "cerebras", "gemini", "ollama"],
+    "LARGE": ["nvidia", "cerebras", "gemini", "github", "openrouter", "ollama"],
 }
 
 # Router envelope: cap the sample at ~800 chars (first 400 + last 400).
@@ -36,7 +36,7 @@ TIER_TO_ORDER = {
 ROUTER_SAMPLE_HEAD = 400
 ROUTER_SAMPLE_TAIL = 400
 ROUTER_PROMPT = (
-    "You are a routing classifier. Classify requests by size.\n"
+    "You are a routing classifier. Classify requests by size. Respond in JSON.\n"
     "Rules:\n"
     "- TINY: token_count below 1000 with simple factual content.\n"
     "- LARGE: token_count between 1000 and 8000, OR token_count below 1000 "
@@ -113,10 +113,12 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
     last_provider = ""
     last_model = ""
     last_latency = 0
+    router_attempts = []
 
     for name in router_pool.candidates():
         ok, why = router_pool.state[name].can_use(LIMITS[name], 400)
         if not ok:
+            router_attempts.append({"provider": name, "model": router_pool.providers[name].model, "status": "skipped", "reason": why})
             continue
         provider = router_pool.providers[name]
         t0 = time.time()
@@ -139,7 +141,11 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
             router_pool.state[name].tokens_minute.append((time.time(), tokens))
             # Extract tier from structured output, fallback to text parsing
             parsed = result.get("parsed")
-            tier = parsed.get("tier") if parsed else _parse_tier(result.get("text", ""))
+            tier = (parsed.get("tier") or parsed.get("classification")) if parsed else None
+            if tier:
+                tier = tier.upper() if tier.upper() in ("TINY", "LARGE", "HUGE") else None
+            if tier is None:
+                tier = _parse_tier(result.get("text", ""))
             # Sanity clamp: HUGE is only valid when the deterministic count
             # agrees. Small router LLMs occasionally hallucinate HUGE on small
             # inputs that look "dense" (URLs, JSON brackets, code fragments).
@@ -151,14 +157,24 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
                 # Router returned text we couldn't classify — try the next router
                 # rather than giving up immediately. Log this attempt as a soft
                 # failure with the actual response captured.
+                raw_text = result.get("text", "")
+                router_attempts.append({
+                    "provider": name, "model": result.get("model", provider.model),
+                    "status": "unparseable", "latency_ms": latency,
+                    "raw_reply": raw_text[:300],
+                })
                 db.log_call(provider=name, model=result.get("model", provider.model),
                             input_tokens=result.get("input_tokens", 0),
                             output_tokens=result.get("output_tokens", 0),
                             latency_ms=latency, status="error",
-                            error=f"unparseable tier reply: {result.get('text','')[:100]}",
+                            error=f"unparseable tier reply: {raw_text[:300]}",
                             prompt_chars=len(envelope),
                             call_role=call_role, router_decision="unparseable")
                 continue
+            router_attempts.append({
+                "provider": name, "model": result.get("model", provider.model),
+                "status": "ok", "tier": tier, "latency_ms": latency,
+            })
             db.log_call(provider=name, model=result.get("model", provider.model),
                         input_tokens=result.get("input_tokens", 0),
                         output_tokens=result.get("output_tokens", 0),
@@ -169,10 +185,16 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
                 role=role, tier=tier, estimated_tokens=estimated,
                 router_provider=name, router_model=result.get("model", provider.model),
                 router_latency_ms=latency, fallback_used=False,
+                router_attempts=router_attempts,
             )
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last_latency = latency
+            router_attempts.append({
+                "provider": name, "model": provider.model,
+                "status": "error", "latency_ms": latency,
+                "error": str(e)[:300],
+            })
             db.log_call(provider=name, model=provider.model,
                         status="error", error=str(e)[:500],
                         latency_ms=latency, call_role=call_role,
@@ -187,6 +209,7 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
         router_provider=last_provider or "(unavailable)",
         router_model=last_model or "(unavailable)",
         router_latency_ms=last_latency, fallback_used=True,
+        router_attempts=router_attempts,
     )
 
 
@@ -306,7 +329,7 @@ async def chat(req: ChatRequest):
         # Replace failover order with the tier-specific one, intersected with
         # what's actually wired in this gateway.
         tier_order = TIER_TO_ORDER[router_decision.tier]
-        candidates = [p for p in tier_order if p in router.providers]
+        candidates = [p for p in tier_order if p in router.order]
     else:
         candidates = router.candidates(req.provider) if req.provider else list(router.order)
 

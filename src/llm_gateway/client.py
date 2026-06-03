@@ -34,7 +34,7 @@ class LLM:
         url = f"{self.base_url}/v1/chat"
         for attempt in range(3):
             r = httpx.post(url, json=body, timeout=self.timeout)
-            if r.status_code == 503:
+            if r.status_code in (502, 503, 429):
                 wait = 2 ** attempt
                 time.sleep(wait)
                 continue

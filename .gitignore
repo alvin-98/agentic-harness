@@ -2,3 +2,6 @@
 .venv
 __pycache__
 archive
+*.egg-info/
+notebooks/*.ipynb
+*.json

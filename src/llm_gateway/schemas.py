@@ -71,6 +71,7 @@ class RouterDecision(BaseModel):
     chosen_worker_provider: Optional[str] = None
     chosen_worker_model: Optional[str] = None
     fallback_used: bool = False  # true if router LLM failed and tier was decided by token-count rule
+    router_attempts: list[dict[str, Any]] = Field(default_factory=list)  # each attempted router with outcome
 
 
 class ChatResponse(BaseModel):
