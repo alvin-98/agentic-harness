@@ -257,7 +257,7 @@ class HumanReadableFormatter(logging.Formatter):
 
         if event == "goal_marked_done":
             gid = extra.get("goal_id", "?")[:12]
-            text = extra.get("goal_text", "")[:50]
+            text = extra.get("goal_text", "")
             return f"[perception]     ✓ g:{gid} done - {text}\n"
 
         if event == "artifact_attached_to_goal":
@@ -274,7 +274,7 @@ class HumanReadableFormatter(logging.Formatter):
 
         if event == "goal_selected":
             gid = extra.get("goal_id", "?")[:12]
-            text = extra.get("goal_text", "")[:60]
+            text = extra.get("goal_text", "")
             return f"[perception]     → selected g:{gid}: {text}\n"
 
         # Perception LLM events

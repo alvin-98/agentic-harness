@@ -227,15 +227,15 @@ async def run(query: str) -> str:
     return final
 
 def main() -> None:
-    # query1 = "Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory."
+    query = "Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory."
     # query = """Find 3 family-friendly things to do in Tokyo this weekend.
 # Check Saturday's weather forecast there and tell me which one
 # is most appropriate."""
     # query = """My mom's birthday is 15 May 2026. Remember that and give me
     #    a calendar reminder for two weeks before and on the day."""
     # query = "When is mom's birthday?"
-    query = """Search for 'Python asyncio best practices', read the top 3 results,
-and give me a short numbered list of the advice they agree on."""
+#     query = """Search for 'Python asyncio best practices', read the top 3 results,
+# and give me a short numbered list of the advice they agree on."""
     result = asyncio.run(run(query))
     print(result)
 

@@ -18,6 +18,7 @@ class MemoryItem(BaseModel):
     descriptor: str            # one short human-readable line
     value: dict                # structured payload
     artifact_id: str | None = None
+    embedding: list[float] | None = None  # 768-dim nomic vector; None for scratchpad
     source: str = ""
     run_id: str = ""
     goal_id: str | None = None

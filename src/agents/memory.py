@@ -1,23 +1,34 @@
 """
-Durable memory for the agent.
+Durable memory for the agent — Session 7.
 
-- Can add, read, filter, and clear memories.
-- Can use kind to tag and set automatic expiry dates, for example, scratchpad memories expire after run completes.
-- Memories can also be added with an expiry date.
-- Memories can be filtered by kind, goal_id, and recency.
-- Relevance of memory can be determined by query and history.
+Persistence:
+  - state/memory.json   — source of truth for all MemoryItems
+  - state/index.faiss   — FAISS IndexFlatIP (768-dim, cosine via L2-norm)
+  - state/index_ids.json — ordered list of memory IDs parallel to FAISS rows
+
+Read path:
+  1. Embed query via gateway (task_type="retrieval_query")
+  2. FAISS.search → top-k by cosine similarity
+  3. If FAISS is empty or gateway unreachable → keyword overlap fallback
+
+Write paths:
+  - remember()       — LLM classifier + embed descriptor → persist
+  - record_outcome() — embed descriptor → persist
+  - add_fact()       — direct insertion (no classifier), embed → persist
+  Scratchpad items skip embedding (embedding=None).
+
+Cross-process consistency: The FAISS index is reloaded from disk on every
+read call. The MCP subprocess writes chunks via index_document which updates
+the on-disk files. The agent process sees those writes on its next read.
 """
 
-import os
 import sys
 import uuid
 import json
-import ast
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "llm_gateway"))
 
@@ -28,121 +39,236 @@ from . import config
 
 logger = get_logger(__name__)
 
-PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSV_FILE = os.path.join(PARENT_DIR, "memory.csv")
-
-CSV_COLUMNS = [
-    "id", "kind", "keywords", "descriptor", "value", "artifact_id",
-    "source", "run_id", "goal_id", "confidence", "created_at", "expiry_date"
-]
-
-RELEVANCE_SYSTEM_PROMPT = config.MEMORY_RELEVANCE_SYSTEM_PROMPT
+# ── Paths ────────────────────────────────────────────────────────────────────
+STATE_DIR = Path(__file__).resolve().parent / "state"
+MEMORY_JSON = STATE_DIR / "memory.json"
+FAISS_INDEX_PATH = STATE_DIR / "index.faiss"
+FAISS_IDS_PATH = STATE_DIR / "index_ids.json"
 
 EXTRACTION_SYSTEM_PROMPT = config.MEMORY_EXTRACTION_SYSTEM_PROMPT
+
+EMBED_DIM = 768  # nomic-embed-text-v1.5 output dimension
+
+
+def _new_id(prefix: str = "mem") -> str:
+    return f"{prefix}:{uuid.uuid4().hex[:12]}"
 
 
 class Memory:
     def __init__(self):
-        self._ensure_csv_exists()
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self._ensure_json_exists()
         self._cleanup_expired()
         self.llm = LLM()
 
+    # ── JSON persistence ─────────────────────────────────────────────────────
+
+    def _ensure_json_exists(self):
+        if not MEMORY_JSON.exists():
+            MEMORY_JSON.write_text("[]", encoding="utf-8")
+
+    def _load_items(self) -> list[dict]:
+        """Load raw dicts from memory.json."""
+        self._ensure_json_exists()
+        try:
+            data = json.loads(MEMORY_JSON.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+        except (json.JSONDecodeError, OSError):
+            return []
+
+    def _save_items(self, items: list[dict]):
+        """Write raw dicts to memory.json."""
+        MEMORY_JSON.write_text(
+            json.dumps(items, default=str, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _dict_to_item(self, d: dict) -> MemoryItem | None:
+        """Convert a raw dict to a MemoryItem, returning None on failure."""
+        try:
+            return MemoryItem(
+                id=d["id"],
+                kind=Kind(d["kind"]),
+                keywords=d.get("keywords", []),
+                descriptor=d.get("descriptor", ""),
+                value=d.get("value", {}),
+                artifact_id=d.get("artifact_id"),
+                embedding=d.get("embedding"),
+                source=d.get("source", ""),
+                run_id=d.get("run_id", ""),
+                goal_id=d.get("goal_id"),
+                confidence=float(d.get("confidence", 1.0)),
+                created_at=datetime.fromisoformat(d["created_at"]) if d.get("created_at") else datetime.now(),
+                expiry_date=datetime.fromisoformat(d["expiry_date"]) if d.get("expiry_date") else None,
+            )
+        except Exception:
+            return None
+
+    def _item_to_dict(self, item: MemoryItem) -> dict:
+        """Serialize a MemoryItem to a JSON-safe dict."""
+        return {
+            "id": item.id,
+            "kind": item.kind.value if isinstance(item.kind, Kind) else item.kind,
+            "keywords": item.keywords,
+            "descriptor": item.descriptor,
+            "value": item.value,
+            "artifact_id": item.artifact_id,
+            "embedding": item.embedding,
+            "source": item.source,
+            "run_id": item.run_id,
+            "goal_id": item.goal_id,
+            "confidence": item.confidence,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+            "expiry_date": item.expiry_date.isoformat() if item.expiry_date else None,
+        }
+
+    # ── FAISS index ──────────────────────────────────────────────────────────
+
+    def _load_faiss_index(self):
+        """Reload FAISS index from disk. Returns (index, id_list) or (None, [])."""
+        try:
+            import faiss
+        except ImportError:
+            logger.warning("faiss_not_installed")
+            return None, []
+
+        if not FAISS_INDEX_PATH.exists() or not FAISS_IDS_PATH.exists():
+            return None, []
+
+        try:
+            index = faiss.read_index(str(FAISS_INDEX_PATH))
+            ids = json.loads(FAISS_IDS_PATH.read_text(encoding="utf-8"))
+            return index, ids
+        except Exception as e:
+            logger.warning("faiss_load_failed", error=str(e))
+            return None, []
+
+    def _save_faiss_index(self, index, ids: list[str]):
+        """Write FAISS index and id list to disk."""
+        import faiss
+        faiss.write_index(index, str(FAISS_INDEX_PATH))
+        FAISS_IDS_PATH.write_text(json.dumps(ids), encoding="utf-8")
+
+    def _append_to_faiss(self, memory_id: str, embedding: list[float]):
+        """Append a single vector to the on-disk FAISS index."""
+        import faiss
+
+        index, ids = self._load_faiss_index()
+        if index is None:
+            index = faiss.IndexFlatIP(EMBED_DIM)
+            ids = []
+
+        vec = np.array([embedding], dtype=np.float32)
+        # L2-normalize so inner product = cosine similarity
+        faiss.normalize_L2(vec)
+        index.add(vec)
+        ids.append(memory_id)
+        self._save_faiss_index(index, ids)
+
+    def _rebuild_faiss_from_items(self, items: list[dict]):
+        """Rebuild the entire FAISS index from memory items that have embeddings."""
+        import faiss
+
+        ids = []
+        vectors = []
+        for item in items:
+            emb = item.get("embedding")
+            if emb and len(emb) == EMBED_DIM:
+                ids.append(item["id"])
+                vectors.append(emb)
+
+        index = faiss.IndexFlatIP(EMBED_DIM)
+        if vectors:
+            vecs = np.array(vectors, dtype=np.float32)
+            faiss.normalize_L2(vecs)
+            index.add(vecs)
+
+        self._save_faiss_index(index, ids)
+
+    # ── Embedding ────────────────────────────────────────────────────────────
+
+    def _try_embed(self, text: str, task_type: str = "retrieval_document") -> list[float] | None:
+        """Embed text via the gateway. Returns None on failure (graceful degradation)."""
+        try:
+            result = self.llm.embed(text, task_type=task_type)
+            emb = result.get("embedding")
+            if emb and len(emb) == EMBED_DIM:
+                return emb
+            return None
+        except Exception as e:
+            logger.warning("embed_failed", error=str(e)[:200], task_type=task_type)
+            return None
+
+    # ── Core persist helper ──────────────────────────────────────────────────
+
+    def _persist_item(self, item: MemoryItem) -> MemoryItem:
+        """Append item to memory.json and update FAISS index. Synchronous."""
+        items = self._load_items()
+        items.append(self._item_to_dict(item))
+        self._save_items(items)
+
+        if item.embedding:
+            self._append_to_faiss(item.id, item.embedding)
+
+        return item
+
+    # ── Expiry ───────────────────────────────────────────────────────────────
+
+    def _cleanup_expired(self):
+        """Remove all expired memories and rebuild FAISS if any were removed."""
+        items = self._load_items()
+        if not items:
+            return
+
+        now = datetime.now()
+        cleaned = []
+        removed = 0
+        for d in items:
+            expiry = d.get("expiry_date")
+            if expiry:
+                try:
+                    if datetime.fromisoformat(expiry) <= now:
+                        removed += 1
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            cleaned.append(d)
+
+        if removed:
+            self._save_items(cleaned)
+            self._rebuild_faiss_from_items(cleaned)
+
+    # ── Keyword overlap fallback ─────────────────────────────────────────────
+
+    def _keyword_search(self, query: str, items: list[dict], top_k: int) -> list[MemoryItem]:
+        """Score items by keyword overlap with query tokens. Fallback retrieval."""
+        query_tokens = set(query.lower().split())
+        scored = []
+        for d in items:
+            keywords = set(k.lower() for k in d.get("keywords", []))
+            desc_tokens = set(d.get("descriptor", "").lower().split())
+            overlap = len(query_tokens & (keywords | desc_tokens))
+            if overlap > 0:
+                scored.append((overlap, d))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results = []
+        for _, d in scored[:top_k]:
+            item = self._dict_to_item(d)
+            if item:
+                results.append(item)
+        return results
+
+    # ── Public API ───────────────────────────────────────────────────────────
+
     def __len__(self):
-        df = self._load_csv()
-        return len(df)
+        return len(self._load_items())
 
     def __repr__(self):
         return f"Memory(items={len(self)})"
 
     def __str__(self):
         return self.__repr__()
-
-    def _ensure_csv_exists(self):
-        """Create the CSV file if it doesn't exist."""
-        if not os.path.exists(CSV_FILE):
-            df = pd.DataFrame(columns=CSV_COLUMNS)
-            df.to_csv(CSV_FILE, index=False)
-
-    def _load_csv(self) -> pd.DataFrame:
-        """Load the CSV file into a DataFrame."""
-        self._ensure_csv_exists()
-        return pd.read_csv(CSV_FILE)
-
-    def _save_csv(self, df: pd.DataFrame):
-        """Save the DataFrame to the CSV file."""
-        df.to_csv(CSV_FILE, index=False)
-
-    def _cleanup_expired(self):
-        """Remove all expired memories from the CSV file."""
-        df = self._load_csv()
-        if df.empty:
-            return
-        
-        now = datetime.now()
-        
-        def is_not_expired(expiry_val):
-            if pd.isna(expiry_val) or expiry_val == "" or expiry_val is None:
-                return True  # None means never expires
-            try:
-                expiry_dt = datetime.fromisoformat(str(expiry_val))
-                return expiry_dt > now
-            except (ValueError, TypeError):
-                return True  # Keep if we can't parse
-        
-        mask = df["expiry_date"].apply(is_not_expired)
-        df_cleaned = df[mask]
-        
-        if len(df_cleaned) < len(df):
-            self._save_csv(df_cleaned)
-
-    def _rows_to_items(self, df: "pd.DataFrame") -> list[MemoryItem]:
-        """Convert DataFrame rows to MemoryItem objects."""
-        if df.empty:
-            return []
-        
-        items = []
-        for _, row in df.iterrows():
-            try:
-                keywords = row.get("keywords", [])
-                if isinstance(keywords, str):
-                    keywords = ast.literal_eval(keywords) if keywords else []
-                
-                value = row.get("value", {})
-                if isinstance(value, str):
-                    value = ast.literal_eval(value) if value else {}
-                
-                expiry_val = row.get("expiry_date")
-                item = MemoryItem(
-                    id=str(row["id"]),
-                    kind=Kind(row["kind"]) if row["kind"] else Kind.FACT,
-                    keywords=keywords,
-                    descriptor=str(row.get("descriptor", "")),
-                    value=value,
-                    artifact_id=str(row["artifact_id"]) if pd.notna(row.get("artifact_id")) else None,
-                    source=str(row["source"]),
-                    run_id=str(row["run_id"]),
-                    goal_id=str(row["goal_id"]) if pd.notna(row.get("goal_id")) else None,
-                    confidence=float(row.get("confidence", 0.0)),
-                    created_at=datetime.fromisoformat(str(row["created_at"])) if row.get("created_at") else datetime.now(),
-                    expiry_date=datetime.fromisoformat(str(expiry_val)) if pd.notna(expiry_val) and expiry_val != "" else None,
-                )
-                items.append(item)
-            except Exception:
-                continue
-        
-        return items
-
-    def _df_to_memory_items(self) -> list[MemoryItem]:
-        """Load all non-expired memories from CSV."""
-        self._cleanup_expired()
-        df = self._load_csv()
-        return self._rows_to_items(df)
-
-    def _delete_by_ids(self, ids: list[str]):
-        """Delete memories by their IDs from the CSV."""
-        df = self._load_csv()
-        df = df[~df["id"].astype(str).isin([str(i) for i in ids])]
-        self._save_csv(df)
 
     def remember(
         self,
@@ -177,7 +303,7 @@ class Memory:
         Returns:
             The ID of the created memory.
         """
-        memory_id = str(uuid.uuid4())
+        memory_id = _new_id("mem")
         if query and source == "user_query":
             messages = [{"role": "user", "content": f"Extract memory attributes from this user input:\n\n{query}"}]
             _c = config.MEMORY_EXTRACTION_LLM
@@ -210,14 +336,20 @@ class Memory:
                 confidence = float(extracted.get("confidence", confidence))
             except (json.JSONDecodeError, ValueError, KeyError):
                 pass  # Use the original provided values if extraction fails
-            
+
+        # Embed for non-scratchpad items
+        embedding = None
+        if kind != Kind.SCRATCHPAD:
+            embedding = self._try_embed(descriptor, task_type="retrieval_document")
+
         memory_item = MemoryItem(
             id=memory_id,
             kind=kind,
-            keywords=keywords or [],
+            keywords=[k.lower() for k in (keywords or [])],
             descriptor=descriptor,
             value=value or {},
             artifact_id=None,
+            embedding=embedding,
             source=source,
             run_id=str(run_id),
             goal_id=goal_id,
@@ -225,28 +357,49 @@ class Memory:
             created_at=datetime.now(),
             expiry_date=expiry_date,
         )
-        
-        df = self._load_csv()
-        row_dict = memory_item.model_dump()
-        row_dict["kind"] = row_dict["kind"].value if isinstance(row_dict["kind"], Kind) else row_dict["kind"]
-        row_dict["keywords"] = json.dumps(row_dict["keywords"])
-        row_dict["value"] = json.dumps(row_dict["value"])
-        row_dict["created_at"] = row_dict["created_at"].isoformat() if row_dict["created_at"] else None
-        row_dict["expiry_date"] = row_dict["expiry_date"].isoformat() if row_dict["expiry_date"] else None
-        
-        df = pd.concat([df, pd.DataFrame([row_dict])], ignore_index=True)
-        self._save_csv(df)
-        
+
+        self._persist_item(memory_item)
+
         logger.info("memory_created",
                    memory_id=memory_id,
                    kind=kind.value if isinstance(kind, Kind) else kind,
                    source=source,
+                   has_embedding=embedding is not None,
                    descriptor=descriptor[:100] if descriptor else None)
         return memory_id
+
+    def add_fact(
+        self,
+        descriptor: str,
+        *,
+        value: dict,
+        keywords: list[str],
+        source: str,
+        run_id: str,
+        goal_id: str | None = None,
+    ) -> MemoryItem:
+        """Write a fact chunk directly — no LLM classifier. Used by index_document."""
+        embedding = self._try_embed(descriptor, task_type="retrieval_document")
+        item = MemoryItem(
+            id=_new_id("mem"),
+            kind=Kind.FACT,
+            keywords=[k.lower() for k in keywords],
+            descriptor=descriptor,
+            value=value,
+            embedding=embedding,
+            source=source,
+            run_id=run_id,
+            goal_id=goal_id,
+            confidence=1.0,
+            created_at=datetime.now(),
+            expiry_date=None,
+        )
+        return self._persist_item(item)
 
     def recollect(self, query: str, history: list[dict] = None, kinds: list[Kind] = None, top_k: int = 10) -> list[MemoryItem]:
         """
         Read memories that are relevant to the query and history.
+        Vector-first retrieval with keyword overlap fallback.
         
         Args:
             query: The query to read.
@@ -254,7 +407,55 @@ class Memory:
             kinds: The kinds of memories to read - fact, preference, tool_outcome, scratchpad.
             top_k: The number of memories to read.
         """
-        return self.relevant(query, kinds, top_k, history=history)
+        items = self._load_items()
+        if not items:
+            return []
+
+        # Filter by kinds if specified
+        if kinds:
+            kind_values = {k.value if isinstance(k, Kind) else k for k in kinds}
+            items = [d for d in items if d.get("kind") in kind_values]
+
+        # Vector path: embed query, search FAISS
+        query_embedding = self._try_embed(query, task_type="retrieval_query")
+        if query_embedding:
+            index, ids = self._load_faiss_index()
+            if index is not None and index.ntotal > 0:
+                vec = np.array([query_embedding], dtype=np.float32)
+                import faiss
+                faiss.normalize_L2(vec)
+                k_search = min(top_k * 2, index.ntotal)
+                scores, indices = index.search(vec, k_search)
+
+                # Map FAISS results back to items, respecting kind filter
+                id_to_item = {d["id"]: d for d in items}
+                results = []
+                for score, idx in zip(scores[0], indices[0]):
+                    if idx < 0 or idx >= len(ids):
+                        continue
+                    mid = ids[idx]
+                    if mid in id_to_item:
+                        mem = self._dict_to_item(id_to_item[mid])
+                        if mem:
+                            results.append(mem)
+                    if len(results) >= top_k:
+                        break
+
+                if results:
+                    logger.debug("memory_vector_search",
+                                query=query[:100],
+                                hits=len(results))
+                    return results
+
+        # Fallback: keyword overlap
+        logger.debug("memory_keyword_fallback", query=query[:100])
+        return self._keyword_search(query, items, top_k)
+
+    def read(self, query: str, history: list[dict] = None, top_k: int = 10) -> list[MemoryItem]:
+        """
+        Primary read interface. Vector-first with keyword fallback.
+        """
+        return self.recollect(query, history, top_k=top_k)
 
     def filter(
         self,
@@ -270,82 +471,34 @@ class Memory:
             goal_id: The goal ID to filter by.
             recency: The number of most recent memories to return.
         """
-        df = self._load_csv()
-        
+        items = self._load_items()
+
         if kinds:
-            kind_values = [k.value if isinstance(k, Kind) else k for k in kinds]
-            df = df[df["kind"].isin(kind_values)]
-        
+            kind_values = {k.value if isinstance(k, Kind) else k for k in kinds}
+            items = [d for d in items if d.get("kind") in kind_values]
+
         if goal_id:
-            df = df[df["goal_id"] == goal_id]
-        
+            items = [d for d in items if d.get("goal_id") == goal_id]
+
         # Sort by created_at descending
-        df = df.sort_values("created_at", ascending=False)
-        
+        items.sort(key=lambda d: d.get("created_at", ""), reverse=True)
+
         if recency and recency > 0:
-            df = df.head(recency)
-        
-        return self._rows_to_items(df)
+            items = items[:recency]
+
+        results = []
+        for d in items:
+            item = self._dict_to_item(d)
+            if item:
+                results.append(item)
+        return results
 
     def relevant(self, query: str, kinds: list[Kind] = None, top_k: int = 10, history: list[dict] = None) -> list[MemoryItem]:
         """
-        Get relevant memories for a query using LLM ranking.
-        
-        Args:
-            query: The query to get relevant memories for.
-            kinds: The kinds of memories to get - fact, preference, tool_outcome, scratchpad.
-            top_k: The number of memories to get.
-            history: Recent agent history for additional context.
+        Get relevant memories — delegates to vector search with fallback.
+        Replaces the old LLM-ranking approach.
         """
-        candidates = self.filter(kinds=kinds)
-        
-        if not candidates:
-            return []
-        
-        if len(candidates) <= top_k:
-            return candidates
-        
-        memories_summary = "\n".join([
-            f"- ID: {m.id}, Descriptor: {m.descriptor}, Kind: {m.kind.value}"
-            for m in candidates
-        ])
-        
-        history_context = ""
-        if history:
-            recent = history[-5:]  # last 5 history entries for context
-            history_context = f"\n\nRecent history:\n{recent}"
-        
-        messages = [{
-            "role": "user",
-            "content": f"Query: {query}{history_context}\n\nMemories:\n{memories_summary}\n\nReturn the top {top_k} most relevant memory IDs."
-        }]
-        
-        
-        _c = config.MEMORY_RELEVANCE_LLM
-        reply = self.llm.chat(
-            messages=messages,
-            system=RELEVANCE_SYSTEM_PROMPT,
-            cache_system=_c.cache_system,
-            reasoning=_c.reasoning,
-            provider=_c.provider,
-            model=_c.model,
-            temperature=_c.temperature,
-            max_tokens=_c.max_tokens,
-            auto_route=_c.auto_route,
-        )
-        
-        try:
-            relevant_ids = json.loads(reply["text"])
-            id_to_memory = {m.id: m for m in candidates}
-            result = [id_to_memory[mid] for mid in relevant_ids if mid in id_to_memory][:top_k]
-            logger.debug("memory_relevance_ranked",
-                        query=query[:100],
-                        candidates=len(candidates),
-                        returned=len(result))
-            return result
-        except (json.JSONDecodeError, AttributeError):
-            logger.warning("memory_relevance_ranking_failed", query=query[:100])
-            return candidates[:top_k]
+        return self.recollect(query, history=history, kinds=kinds, top_k=top_k)
 
     def edit(self, memory_id: str, descriptor: str = None, value: dict = None, keywords: list[str] = None):
         """
@@ -357,20 +510,25 @@ class Memory:
             value: New value dict (if provided).
             keywords: New keywords (if provided).
         """
-        df = self._load_csv()
-        mask = df["id"].astype(str) == str(memory_id)
-        
-        if not mask.any():
-            return
-        
-        if descriptor is not None:
-            df.loc[mask, "descriptor"] = descriptor
-        if value is not None:
-            df.loc[mask, "value"] = json.dumps(value)
-        if keywords is not None:
-            df.loc[mask, "keywords"] = json.dumps(keywords)
-        
-        self._save_csv(df)
+        items = self._load_items()
+        changed = False
+        for d in items:
+            if d["id"] == memory_id:
+                if descriptor is not None:
+                    d["descriptor"] = descriptor
+                    # Re-embed on descriptor change
+                    if d.get("kind") != Kind.SCRATCHPAD.value:
+                        d["embedding"] = self._try_embed(descriptor, task_type="retrieval_document")
+                if value is not None:
+                    d["value"] = value
+                if keywords is not None:
+                    d["keywords"] = [k.lower() for k in keywords]
+                changed = True
+                break
+
+        if changed:
+            self._save_items(items)
+            self._rebuild_faiss_from_items(items)
 
     def delete(self, memory_id: str):
         """
@@ -379,21 +537,32 @@ class Memory:
         Args:
             memory_id: The ID of the memory to delete.
         """
-        self._delete_by_ids([memory_id])
+        items = self._load_items()
+        items = [d for d in items if d["id"] != memory_id]
+        self._save_items(items)
+        self._rebuild_faiss_from_items(items)
 
     def reset(self):
         """
-        Reset all memories by clearing the CSV file.
+        Reset all memories — deletes memory.json, index.faiss, index_ids.json.
         """
-        df = pd.DataFrame(columns=CSV_COLUMNS)
-        self._save_csv(df)
+        self._save_items([])
+        if FAISS_INDEX_PATH.exists():
+            FAISS_INDEX_PATH.unlink()
+        if FAISS_IDS_PATH.exists():
+            FAISS_IDS_PATH.unlink()
 
     def get_all(self) -> list[MemoryItem]:
         """
         Get all non-expired memories.
         """
-        df = self._load_csv()
-        return self._rows_to_items(df)
+        items = self._load_items()
+        results = []
+        for d in items:
+            item = self._dict_to_item(d)
+            if item:
+                results.append(item)
+        return results
 
     def expire_run(self, run_id: str) -> int:
         """
@@ -402,26 +571,22 @@ class Memory:
 
         Returns the number of entries expired.
         """
-        df = self._load_csv()
-        if df.empty:
+        items = self._load_items()
+        if not items:
             return 0
 
         run_scoped_kinds = {Kind.TOOL_OUTCOME.value, Kind.SCRATCHPAD.value}
-        mask = (df["run_id"].astype(str) == str(run_id)) & (df["kind"].isin(run_scoped_kinds))
-        count = int(mask.sum())
+        count = 0
+        for d in items:
+            if str(d.get("run_id")) == str(run_id) and d.get("kind") in run_scoped_kinds:
+                d["expiry_date"] = datetime.now().isoformat()
+                count += 1
 
         if count:
-            df.loc[mask, "expiry_date"] = datetime.now().isoformat()
-            self._save_csv(df)
+            self._save_items(items)
             logger.info("run_memories_expired", run_id=run_id, count=count)
 
         return count
-
-    def read(self, query: str, history: list[dict] = None) -> list[MemoryItem]:
-        """
-        Alias for recollect - read memories relevant to the query and history.
-        """
-        return self.recollect(query, history)
 
     def _index_search_results(
         self,
@@ -443,7 +608,6 @@ class Memory:
             return
 
         search_query = query_args.get("query", "")
-        rows = []
         for idx, item in enumerate(results, start=1):
             title = item.get("title", "")
             url = item.get("url", "")
@@ -451,14 +615,15 @@ class Memory:
             if not url:
                 continue
 
-            memory_id = str(uuid.uuid4())
+            # Scratchpad — no embedding
             mem = MemoryItem(
-                id=memory_id,
+                id=_new_id("mem"),
                 kind=Kind.SCRATCHPAD,
-                keywords=["search_result", "url", search_query],
+                keywords=["search_result", "url", search_query.lower()],
                 descriptor=f"Search result #{idx} for '{search_query}': {title} — {url}",
                 value={"index": idx, "url": url, "title": title, "snippet": snippet},
                 artifact_id=None,
+                embedding=None,
                 source="search_index",
                 run_id=run_id,
                 goal_id=goal_id,
@@ -466,22 +631,40 @@ class Memory:
                 created_at=datetime.now(),
                 expiry_date=None,
             )
-            row_dict = mem.model_dump()
-            row_dict["kind"] = row_dict["kind"].value if isinstance(row_dict["kind"], Kind) else row_dict["kind"]
-            row_dict["keywords"] = json.dumps(row_dict["keywords"])
-            row_dict["value"] = json.dumps(row_dict["value"])
-            row_dict["created_at"] = row_dict["created_at"].isoformat() if row_dict["created_at"] else None
-            row_dict["expiry_date"] = row_dict["expiry_date"].isoformat() if row_dict["expiry_date"] else None
-            rows.append(row_dict)
+            self._persist_item(mem)
 
-        if rows:
-            df = self._load_csv()
-            df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
-            self._save_csv(df)
-            logger.info("search_results_indexed",
-                       count=len(rows),
-                       query=search_query,
-                       goal_id=goal_id)
+        logger.info("search_results_indexed",
+                   query=search_query,
+                   goal_id=goal_id)
+
+    def _summarize_outcome(self, tool_name: str, arguments: dict, result_text: str) -> str:
+        """Generate a one-line semantic descriptor for a tool outcome via LLM."""
+        snippet = result_text[:1500]
+        prompt = (
+            f"Tool: {tool_name}\nArguments: {arguments}\n"
+            f"Result snippet:\n{snippet}\n\n"
+            f"{config.MEMORY_SUMMARIZE_USER_PROMPT}"
+        )
+        _c = config.MEMORY_SUMMARIZE_LLM
+        try:
+            reply = self.llm.chat(
+                prompt=prompt,
+                system=config.MEMORY_SUMMARIZE_SYSTEM_PROMPT,
+                cache_system=_c.cache_system,
+                reasoning=_c.reasoning,
+                provider=_c.provider,
+                model=_c.model,
+                temperature=_c.temperature,
+                max_tokens=_c.max_tokens,
+                auto_route=_c.auto_route,
+            )
+            summary = reply["text"].strip()
+            if summary:
+                return summary
+        except Exception as e:
+            logger.warning("summarize_outcome_failed", error=str(e)[:200])
+        # Fallback: use tool name + arguments
+        return f"Tool '{tool_name}' called with {arguments}"
 
     def record_outcome(
         self,
@@ -504,9 +687,10 @@ class Memory:
         Returns:
             The ID of the created memory.
         """
-        descriptor = f"Tool '{tool_call.name}' executed: {result_text[:200]}"
-        
-        memory_id = str(uuid.uuid4())
+        descriptor = self._summarize_outcome(tool_call.name, tool_call.arguments, result_text)
+        embedding = self._try_embed(descriptor, task_type="retrieval_document")
+
+        memory_id = _new_id("mem")
         memory_item = MemoryItem(
             id=memory_id,
             kind=Kind.TOOL_OUTCOME,
@@ -518,6 +702,7 @@ class Memory:
                 "result": result_text,
             },
             artifact_id=artifact_id,
+            embedding=embedding,
             source="action",
             run_id=run_id,
             goal_id=goal_id,
@@ -525,23 +710,15 @@ class Memory:
             created_at=datetime.now(),
             expiry_date=None,
         )
-        
-        df = self._load_csv()
-        row_dict = memory_item.model_dump()
-        row_dict["kind"] = row_dict["kind"].value if isinstance(row_dict["kind"], Kind) else row_dict["kind"]
-        row_dict["keywords"] = json.dumps(row_dict["keywords"])
-        row_dict["value"] = json.dumps(row_dict["value"])
-        row_dict["created_at"] = row_dict["created_at"].isoformat() if row_dict["created_at"] else None
-        row_dict["expiry_date"] = row_dict["expiry_date"].isoformat() if row_dict["expiry_date"] else None
-        
-        df = pd.concat([df, pd.DataFrame([row_dict])], ignore_index=True)
-        self._save_csv(df)
-        
+
+        self._persist_item(memory_item)
+
         logger.info("tool_outcome_recorded",
                    memory_id=memory_id,
                    tool_name=tool_call.name,
                    goal_id=goal_id,
-                   has_artifact=artifact_id is not None)
+                   has_artifact=artifact_id is not None,
+                   has_embedding=embedding is not None)
 
         if tool_call.name == "web_search":
             self._index_search_results(

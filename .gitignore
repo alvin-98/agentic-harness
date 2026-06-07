@@ -5,3 +5,6 @@ archive
 *.egg-info/
 notebooks/*.ipynb
 *.json
+src/agents/state/
+src/artifacts/
+src/logs/

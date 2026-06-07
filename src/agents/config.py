@@ -35,6 +35,7 @@ class LLMConfig:
 # Memory: lightweight extraction & ranking — reasoning off
 MEMORY_EXTRACTION_LLM  = LLMConfig(auto_route="memory", reasoning="off")
 MEMORY_RELEVANCE_LLM   = LLMConfig(auto_route="memory", reasoning="off")
+MEMORY_SUMMARIZE_LLM   = LLMConfig(auto_route="memory", reasoning="off", max_tokens=256)
 # MEMORY_EXTRACTION_LLM  = LLMConfig(provider="sglang")
 # MEMORY_RELEVANCE_LLM   = LLMConfig(provider="sglang")
 
@@ -77,6 +78,14 @@ Example input: "Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me h
 Example output:
 {"should_store": false, "kind": "fact", "keywords": ["Claude Shannon", "Wikipedia", "birth date"], "descriptor": "User wants to fetch Claude Shannon Wikipedia page and find birth date", "value": {}, "confidence": 1.0}
 """
+
+
+MEMORY_SUMMARIZE_SYSTEM_PROMPT = """You summarize tool results into concise semantic descriptors for memory retrieval."""
+
+MEMORY_SUMMARIZE_USER_PROMPT = (
+    "Write ONE concise sentence describing the semantic content of this tool result. "
+    "Focus on what information was retrieved or produced, not HTTP status codes or byte sizes."
+)
 
 
 # ── Perception Prompts ────────────────────────────────────────────────────────

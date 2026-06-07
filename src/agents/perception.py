@@ -297,7 +297,11 @@ Memory Hits (with artifacts):
                 "type": "json_schema",
                 "schema": {
                     "type": "object",
-                    "properties": {"attach_artifact_id": {"type": ["string", "null"]}},
+                    "properties": {
+                        "attach_artifact_id": {
+                            "enum": [h.artifact_id for h in artifact_hits if h.artifact_id] + [None],
+                        },
+                    },
                     "required": ["attach_artifact_id"],
                     "additionalProperties": False,
                 },

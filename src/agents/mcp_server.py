@@ -17,15 +17,20 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+# Allow importing agents package (Memory uses relative imports)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import httpx
 from ddgs import DDGS
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from agents.memory import Memory
 
 MAX_SEARCH_RESULTS = 5  # hard cap — Tavily prices per result
 
@@ -292,6 +297,73 @@ def edit_file(path: str, find: str, replace: str, replace_all: bool = False) -> 
         "replacements": replacements,
         "size_bytes": p.stat().st_size,
     }
+
+# ── Memory instance (singleton for this subprocess) ─────────────────────────
+_memory = Memory()
+
+
+def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str]:
+    """Split text into word-level chunks with overlap."""
+    words = text.split()
+    if not words:
+        return []
+    chunks = []
+    start = 0
+    while start < len(words):
+        end = start + chunk_size
+        chunk = " ".join(words[start:end])
+        chunks.append(chunk)
+        start += chunk_size - overlap
+    return chunks
+
+
+@mcp.tool()
+def index_document(path: str, chunk_size: int = 400, overlap: int = 80) -> dict:
+    """Chunk a sandbox file or artifact and write the chunks into Memory as
+    fact records, where they become FAISS-searchable for later queries.
+    Use this when the content must be searchable across later turns or runs.
+    For one-shot inspection of a file's contents, use read_file."""
+    p = _safe(path)
+    if not p.exists():
+        raise FileNotFoundError(f"'{path}' does not exist in sandbox")
+    if not p.is_file():
+        raise ValueError(f"'{path}' is not a file")
+
+    text = p.read_text(encoding="utf-8")
+    chunks = _chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+    if not chunks:
+        return {"ok": True, "path": path, "chunks": 0}
+
+    ids = []
+    for i, chunk in enumerate(chunks):
+        item = _memory.add_fact(
+            descriptor=chunk[:200],  # first 200 chars as descriptor
+            value={"text": chunk, "chunk_index": i, "source_path": path},
+            keywords=[Path(path).stem, f"chunk_{i}"],
+            source=f"index_document:{path}",
+            run_id="mcp",
+        )
+        ids.append(item.id)
+
+    return {"ok": True, "path": path, "chunks": len(chunks), "memory_ids": ids}
+
+
+@mcp.tool()
+def search_knowledge(query: str, k: int = 5) -> list[dict]:
+    """Vector search over previously indexed fact chunks. Use this rather
+    than re-fetching or re-reading source files when Memory already
+    contains indexed chunks for the topic."""
+    results = _memory.read(query, top_k=k)
+    return [
+        {
+            "id": item.id,
+            "descriptor": item.descriptor,
+            "value": item.value,
+            "score": item.confidence,
+            "source": item.source,
+        }
+        for item in results
+    ]
 
 
 if __name__ == "__main__":
