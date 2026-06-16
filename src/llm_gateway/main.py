@@ -1,4 +1,4 @@
-import os, time, json
+import os, time, json, re
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -18,17 +18,19 @@ from router import Router, RouterPool, DEFAULT_ROUTER_ORDER, LIMITS, SHORTCUTS, 
 from cache import GeminiCache
 from schemas import ChatRequest, ChatResponse, ToolCall, RouterDecision, EmbedRequest, EmbedResponse
 import embedders as E
+import config as C
 
 DEFAULT_ORDER = ["sglang", "ollama", "gemini", "nvidia", "groq", "cerebras", "openrouter", "github"]
 ORDER = [x.strip() for x in os.getenv("LLM_ORDER", ",".join(DEFAULT_ORDER)).split(",") if x.strip()]
 ROUTER_ORDER = [x.strip() for x in os.getenv("ROUTER_ORDER", ",".join(DEFAULT_ROUTER_ORDER)).split(",") if x.strip()]
 PORT = int(os.getenv("GATEWAY_V3_PORT", "8101"))
 
-# Tier -> worker failover order. TINY prefers small fast workers; LARGE prefers
-# long-context Gemini; HUGE is rejected (Summarizer Agent will live in V7).
+# Tier -> worker failover order. Loaded from models.yaml `tier_order`; these
+# defaults are only used when the config file is missing or has no tier_order.
 TIER_TO_ORDER = {
-    "TINY":  ["github", "openrouter", "nvidia", "cerebras", "gemini", "ollama"],
-    "LARGE": ["nvidia", "cerebras", "gemini", "github", "openrouter", "ollama"],
+    "TINY":  ["github", "openrouter", "cerebras", "gemini", "ollama"],
+    "LARGE": ["cerebras", "gemini", "openrouter", "ollama"],
+    "HUGE":  ["openrouter", "groq"],
 }
 
 # Router envelope: cap the sample at ~800 chars (first 400 + last 400).
@@ -82,8 +84,29 @@ def _tier_from_count(tokens: int) -> str:
     return "TINY"
 
 
+def _strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> tags that reasoning models may emit."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
 def _parse_tier(text: str) -> Optional[str]:
-    up = (text or "").upper()
+    # Strip thinking tags first
+    text = _strip_think_tags(text or "")
+    # Try JSON extraction first (reasoning models may wrap in JSON)
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            tier = (obj.get("tier") or obj.get("classification") or "").upper()
+            if tier in ("TINY", "LARGE", "HUGE"):
+                return tier
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Try extracting JSON from mixed text
+    m = re.search(r'\{[^}]*"tier"\s*:\s*"(TINY|LARGE|HUGE)"[^}]*\}', text, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    # Fallback: keyword search
+    up = text.upper()
     for tier in ("HUGE", "LARGE", "TINY"):
         if tier in up:
             return tier
@@ -146,7 +169,8 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
             if tier:
                 tier = tier.upper() if tier.upper() in ("TINY", "LARGE", "HUGE") else None
             if tier is None:
-                tier = _parse_tier(result.get("text", ""))
+                raw_text = _strip_think_tags(result.get("text", ""))
+                tier = _parse_tier(raw_text)
             # Sanity clamp: HUGE is only valid when the deterministic count
             # agrees. Small router LLMs occasionally hallucinate HUGE on small
             # inputs that look "dense" (URLs, JSON brackets, code fragments).
@@ -217,9 +241,40 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    # Load models.yaml config (V4)
+    gateway_cfg = None
+    if C.CONFIG_PATH.exists():
+        try:
+            gateway_cfg = C.load_config(C.CONFIG_PATH)
+            # Override ORDER/ROUTER_ORDER from config if present
+            if gateway_cfg.llm_order:
+                global ORDER, ROUTER_ORDER, PORT
+                ORDER = gateway_cfg.llm_order
+            if gateway_cfg.router_order:
+                ROUTER_ORDER = gateway_cfg.router_order
+            if gateway_cfg.gateway_port:
+                PORT = gateway_cfg.gateway_port
+            if gateway_cfg.tier_order:
+                global TIER_TO_ORDER
+                TIER_TO_ORDER = gateway_cfg.tier_order
+        except Exception as e:
+            print(f"[WARNING] Failed to load models.yaml: {e}. Falling back to env vars.")
+            gateway_cfg = None
+    # Sync models from provider APIs at startup (discover new, prune stale)
+    if gateway_cfg:
+        try:
+            sync_results = await C.sync_models_on_startup(gateway_cfg)
+            if sync_results:
+                for prov, info in sync_results.items():
+                    print(f"  [sync] {prov}: discovered={info['discovered']}, "
+                          f"added={info['added']}, removed={info['removed']}")
+        except Exception as e:
+            print(f"[WARNING] Model sync at startup failed: {e}")
+
+    app.state.gateway_config = gateway_cfg
     app.state.cache = GeminiCache(ttl_seconds=300)
     app.state.providers = P.build_providers(app.state.cache)
-    app.state.router = Router(app.state.providers, ORDER)
+    app.state.router = Router(app.state.providers, ORDER, config=gateway_cfg)
     app.state.router_providers = P.build_router_providers()
     app.state.router_pool = RouterPool(app.state.router_providers, ROUTER_ORDER)
     app.state.embedders, app.state.embed_order = E.build_embedders()
@@ -318,16 +373,6 @@ async def chat(req: ChatRequest):
     router_decision: Optional[RouterDecision] = None
     if req.auto_route and not req.provider:
         router_decision = await _classify_tier(req, req.auto_route, router_pool, prompt_text)
-        if router_decision.tier == "HUGE":
-            raise HTTPException(
-                503,
-                {
-                    "error": "input exceeds 8000 tokens",
-                    "hint": "Use the Summarizer Agent (V7, not yet implemented). "
-                            "For now, chunk the input or set provider=g explicitly to try Gemini anyway.",
-                    "router_decision": router_decision.model_dump(),
-                },
-            )
         # Replace failover order with the tier-specific one, intersected with
         # what's actually wired in this gateway.
         tier_order = TIER_TO_ORDER[router_decision.tier]
@@ -355,13 +400,22 @@ async def chat(req: ChatRequest):
                 break
             await _asyncio.sleep(min(cd + 0.05, 5))
 
-    for _ in range(len(candidates) + 1):
+    # V4: determine max iterations based on total model slots across all candidates
+    max_iters = len(candidates) + 1
+    if router.config:
+        total_slots = sum(len(router.config.providers[c].models) for c in candidates if c in router.config.providers)
+        max_iters = max(total_slots + 1, max_iters)
+
+    for _ in range(max_iters):
         name, atts = router.pick(est, candidates, required_caps=required_caps)
         all_attempts.extend(atts)
         if name is None:
             break
 
         provider = router.providers[name]
+        # V4: use router-picked model when no explicit req.model override
+        picked_model = router._last_picked_model if router.config else None
+        use_model = req.model or picked_model  # req.model wins if set explicitly
         t0 = time.time()
         router.state[name].record(0)
 
@@ -373,7 +427,7 @@ async def chat(req: ChatRequest):
                         async for chunk in provider.stream(messages,
                                                           max_tokens=req.max_tokens,
                                                           temperature=req.temperature,
-                                                          model=req.model,
+                                                          model=use_model,
                                                           tools=req.tools,
                                                           tool_choice=req.tool_choice,
                                                           reasoning=req.reasoning,
@@ -387,13 +441,13 @@ async def chat(req: ChatRequest):
                                 yield f"data: {json.dumps({'provider': name, 'delta': chunk})}\n\n"
                         text = "".join(agg)
                         latency = int((time.time() - t0) * 1000)
-                        db.log_call(provider=name, model=req.model or provider.model,
+                        db.log_call(provider=name, model=use_model or provider.model,
                                     latency_ms=latency, status="ok",
                                     prompt_chars=len(prompt_text), response_chars=len(text),
                                     override=req.provider, attempted=_attempts_str(all_attempts))
                         yield f"data: {json.dumps({'done': True, 'provider': name})}\n\n"
                     except Exception as e:
-                        db.log_call(provider=name, model=req.model or provider.model,
+                        db.log_call(provider=name, model=use_model or provider.model,
                                     status="error", error=str(e)[:500],
                                     latency_ms=int((time.time() - t0) * 1000),
                                     prompt_chars=len(prompt_text),
@@ -404,7 +458,7 @@ async def chat(req: ChatRequest):
             result = await provider.chat(messages,
                                          max_tokens=req.max_tokens,
                                          temperature=req.temperature,
-                                         model=req.model,
+                                         model=use_model,
                                          tools=req.tools,
                                          tool_choice=req.tool_choice,
                                          reasoning=req.reasoning,
@@ -427,7 +481,7 @@ async def chat(req: ChatRequest):
                     result = await provider.chat(fix_msgs,
                                                  max_tokens=req.max_tokens,
                                                  temperature=0,
-                                                 model=req.model,
+                                                 model=use_model,
                                                  response_format=req.response_format,
                                                  system_blocks=system_blocks,
                                                  cache_system=bool(req.cache_system))
@@ -439,10 +493,24 @@ async def chat(req: ChatRequest):
             tokens = (result["input_tokens"] or 0) + (result["output_tokens"] or 0)
             router.state[name].tokens_today += tokens
             router.state[name].tokens_minute.append((time.time(), tokens))
+            # V4: record per-model state and update live limits from headers
+            actual_model = result["model"] or use_model or provider.model
+            if router.config:
+                router.record_call(name, actual_model, tokens)
+                rl = result.get("rate_limit_headers") or {}
+                if rl:
+                    router.update_live_limits(
+                        name, actual_model,
+                        rpm_remaining=rl.get("rpm_remaining"),
+                        rpd_remaining=rl.get("rpd_remaining"),
+                        rpm_limit=rl.get("rpm_limit"),
+                        rpd_limit=rl.get("rpd_limit"),
+                    )
+                C.maybe_flush_state(router.config)
             if router_decision is not None:
                 router_decision.chosen_worker_provider = name
-                router_decision.chosen_worker_model = result["model"]
-            db.log_call(provider=name, model=result["model"],
+                router_decision.chosen_worker_model = actual_model
+            db.log_call(provider=name, model=actual_model,
                         input_tokens=result["input_tokens"], output_tokens=result["output_tokens"],
                         cache_create_tokens=result["cache_creation_input_tokens"],
                         cache_read_tokens=result["cache_read_input_tokens"],
@@ -475,36 +543,41 @@ async def chat(req: ChatRequest):
         except P.ProviderError as e:
             last_err = str(e)
             secs, reason = _backoff_for(e, has_model_override=bool(req.model))
+            err_model = use_model or provider.model
             if secs > 0:
-                router.state[name].mark_unavailable(secs, reason)
-            db.log_call(provider=name, model=req.model or provider.model,
+                router.mark_model_unavailable(name, err_model, secs, reason)
+            db.log_call(provider=name, model=err_model,
                         status="error", error=str(e)[:500],
                         latency_ms=int((time.time() - t0) * 1000),
                         prompt_chars=len(prompt_text),
                         override=req.provider, attempted=_attempts_str(all_attempts))
             tag = f"failed: {str(e)[:100]}"
             if secs > 0: tag += f" → backoff {secs:.0f}s ({reason})"
-            all_attempts.append({"provider": name, "reason": tag})
+            all_attempts.append({"provider": name, "model": err_model, "reason": tag})
             if explicit_override or not getattr(e, "retryable", True):
                 raise HTTPException(502, f"{name} failed: {e}")
-            candidates = [c for c in candidates if c != name]
+            # V4: don't remove provider from candidates — other models may be available
+            if not router.config:
+                candidates = [c for c in candidates if c != name]
             continue
         except HTTPException:
             raise
         except Exception as e:
             last_err = str(e)
             secs, reason = _backoff_for(e, has_model_override=bool(req.model))
+            err_model = use_model or provider.model
             if secs > 0:
-                router.state[name].mark_unavailable(secs, reason)
-            db.log_call(provider=name, model=req.model or provider.model,
+                router.mark_model_unavailable(name, err_model, secs, reason)
+            db.log_call(provider=name, model=err_model,
                         status="error", error=str(e)[:500],
                         latency_ms=int((time.time() - t0) * 1000),
                         prompt_chars=len(prompt_text),
                         override=req.provider, attempted=_attempts_str(all_attempts))
-            all_attempts.append({"provider": name, "reason": f"exception: {str(e)[:120]}"})
+            all_attempts.append({"provider": name, "model": err_model, "reason": f"exception: {str(e)[:120]}"})
             if explicit_override:
                 raise HTTPException(502, f"{name} failed: {e}")
-            candidates = [c for c in candidates if c != name]
+            if not router.config:
+                candidates = [c for c in candidates if c != name]
             continue
 
     raise HTTPException(503, f"all providers unavailable. attempts: {all_attempts}. last_error: {last_err}")
@@ -637,6 +710,125 @@ async def routers():
         "limits": {k: LIMITS[k] for k in rp.providers},
         "tier_to_order": TIER_TO_ORDER,
     }
+
+
+@app.get("/v1/config")
+async def get_config():
+    """V4: return current gateway config state."""
+    cfg = app.state.gateway_config
+    if not cfg:
+        return {"loaded": False}
+    return {
+        "loaded": True,
+        "failover_strategy": cfg.failover_strategy,
+        "llm_order": cfg.llm_order,
+        "router_order": cfg.router_order,
+        "providers": {
+            pname: {
+                "models": [
+                    {"id": s.id, "rpm_limit": s.rpm_limit, "rpd_limit": s.rpd_limit,
+                     "max_ctx": s.max_ctx, "structured": s.structured,
+                     "type": s.type, "visible": s.visible,
+                     "exhausted": s.exhausted, "rpm_remaining": s.rpm_remaining,
+                     "rpd_remaining": s.rpd_remaining}
+                    for s in pcfg.models if s.visible
+                ],
+                "active_model": pcfg.active_model.id if pcfg.active_model else None,
+                "active_index": pcfg.active_index(),
+            }
+            for pname, pcfg in cfg.providers.items()
+        },
+    }
+
+
+@app.post("/v1/config/strategy")
+async def set_strategy(body: dict):
+    """V4: switch failover strategy at runtime."""
+    cfg = app.state.gateway_config
+    if not cfg:
+        raise HTTPException(400, "models.yaml not loaded")
+    strategy = body.get("strategy", "").lower()
+    if strategy not in ("breadth", "depth"):
+        raise HTTPException(400, "strategy must be 'breadth' or 'depth'")
+    cfg.failover_strategy = strategy
+    C.save_state(cfg)
+    return {"ok": True, "failover_strategy": strategy}
+
+
+@app.post("/v1/config/reload")
+async def reload_config():
+    """V4: hot-reload models.yaml from disk."""
+    cfg = app.state.gateway_config
+    if not cfg:
+        raise HTTPException(400, "models.yaml not loaded")
+    new_cfg = C.reload_if_changed(cfg)
+    app.state.gateway_config = new_cfg
+    app.state.router.config = new_cfg
+    # Update order if changed
+    if new_cfg.llm_order:
+        app.state.router.order = [p for p in new_cfg.llm_order if p in app.state.router.providers]
+    return {"ok": True, "changed": new_cfg is not cfg}
+
+
+@app.post("/v1/config/update")
+async def update_models():
+    """V4: discover models from all configured providers and merge into config.
+
+    Discovers models from Groq, NVIDIA, and OpenRouter (free models only).
+    New models get visible=False by default. Existing models are not overwritten.
+    """
+    cfg = app.state.gateway_config
+    if not cfg:
+        raise HTTPException(400, "models.yaml not loaded")
+
+    results = {}
+    any_added = False
+
+    # OpenRouter: free models only
+    or_key = os.getenv("OPEN_ROUTER_API_KEY", "")
+    if or_key and "openrouter" in cfg.providers:
+        discovered = await C.discover_openrouter_free_models(or_key)
+        added = C.merge_discovered_models(cfg, discovered, provider_name="openrouter")
+        results["openrouter"] = {"discovered": len(discovered), "added": added}
+        if added:
+            any_added = True
+
+    # Groq: all models
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if groq_key and "groq" in cfg.providers:
+        discovered = await C.discover_groq_models(groq_key)
+        added = C.merge_discovered_models(cfg, discovered, provider_name="groq")
+        results["groq"] = {"discovered": len(discovered), "added": added}
+        if added:
+            any_added = True
+
+    # NVIDIA: all models
+    nv_key = os.getenv("NVIDIA_API_KEY", "")
+    if nv_key and "nvidia" in cfg.providers:
+        discovered = await C.discover_nvidia_models(nv_key)
+        added = C.merge_discovered_models(cfg, discovered, provider_name="nvidia")
+        results["nvidia"] = {"discovered": len(discovered), "added": added}
+        if added:
+            any_added = True
+
+    # Gemini: all models supporting generateContent
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    if gemini_key and "gemini" in cfg.providers:
+        discovered = await C.discover_gemini_models(gemini_key)
+        added = C.merge_discovered_models(cfg, discovered, provider_name="gemini")
+        results["gemini"] = {"discovered": len(discovered), "added": added}
+        if added:
+            any_added = True
+
+    if any_added:
+        C.save_state(cfg)
+    return {"ok": True, "results": results}
+
+
+@app.post("/v1/config/discover")
+async def discover_models_compat():
+    """V4 compat: redirect old discover endpoint to update."""
+    return await update_models()
 
 
 @app.get("/v1/calls")

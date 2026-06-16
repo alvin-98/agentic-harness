@@ -69,6 +69,35 @@ def _empty_result(model: str) -> dict:
     }
 
 
+def _extract_rate_limit_headers(headers) -> dict:
+    """Extract rate-limit info from provider response headers.
+
+    Common header patterns:
+    - x-ratelimit-remaining-requests / x-ratelimit-limit-requests  (Groq, OpenRouter, Nvidia)
+    - x-ratelimit-remaining-tokens / x-ratelimit-limit-tokens
+    - x-ratelimit-reset-requests / x-ratelimit-reset-tokens
+    """
+    out = {}
+    def _int(key):
+        v = headers.get(key)
+        if v is not None:
+            try:
+                return int(v)
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    out["rpm_remaining"] = _int("x-ratelimit-remaining-requests")
+    out["rpm_limit"] = _int("x-ratelimit-limit-requests")
+    out["tpm_remaining"] = _int("x-ratelimit-remaining-tokens")
+    out["tpm_limit"] = _int("x-ratelimit-limit-tokens")
+    # Some providers use daily limits in different headers
+    out["rpd_remaining"] = _int("x-ratelimit-remaining-daily-requests")
+    out["rpd_limit"] = _int("x-ratelimit-limit-daily-requests")
+    # Filter out None values
+    return {k: v for k, v in out.items() if v is not None}
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Base
 # ────────────────────────────────────────────────────────────────────────────
@@ -273,6 +302,8 @@ class OpenAICompatProvider(BaseProvider):
                         parsed = json.loads(text)
                     except Exception:
                         pass
+            # V4: capture rate-limit headers for live tracking
+            rl_headers = _extract_rate_limit_headers(r.headers)
             return {
                 "text": text or "",
                 "tool_calls": tool_calls_out,
@@ -285,6 +316,7 @@ class OpenAICompatProvider(BaseProvider):
                 "tool_call_dialect": "native",
                 "reasoning_applied": reasoning_applied,
                 "parsed": parsed,
+                "rate_limit_headers": rl_headers,
             }
 
     async def stream(self, messages, *, max_tokens=2048, temperature=0.7, model=None,
@@ -328,25 +360,135 @@ class OpenAICompatProvider(BaseProvider):
                         continue
 
 
+_GROQ_STRICT_MODELS = {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
+_GROQ_BESTEFFORT_MODELS = _GROQ_STRICT_MODELS | {
+    "openai/gpt-oss-safeguard-20b", "meta-llama/llama-4-scout-17b-16e-instruct",
+}
+
+
+def _groq_strict_schema(schema: dict) -> dict:
+    """Prepare a JSON schema for Groq strict mode: all fields required,
+    additionalProperties false, recursively through nested objects."""
+    s = dict(schema)
+    if s.get("type") == "object" and "properties" in s:
+        s["required"] = list(s["properties"].keys())
+        s["additionalProperties"] = False
+        s["properties"] = {
+            k: _groq_strict_schema(v) for k, v in s["properties"].items()
+        }
+    if s.get("type") == "array" and "items" in s:
+        s["items"] = _groq_strict_schema(s["items"])
+    return s
+
+
 class GroqProvider(OpenAICompatProvider):
     name = "groq"
-    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True, "structured": False}
+    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True, "structured": True}
     def __init__(self, api_key, model):
         super().__init__(api_key, model, "https://api.groq.com/openai/v1")
+
+    def _apply_response_format(self, body, response_format):
+        """Groq structured output: strict constrained decoding for supported models,
+        best-effort json_schema for others, plain json_object as final fallback."""
+        if not response_format:
+            return
+        rf = response_format if isinstance(response_format, dict) else response_format.model_dump(by_alias=True)
+        m = body.get("model", self.model)
+        if rf.get("type") == "json_schema" and rf.get("schema"):
+            if m in _GROQ_STRICT_MODELS:
+                # Strict constrained decoding — all fields required, no additionalProperties
+                schema = _groq_strict_schema(rf["schema"])
+                body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": rf.get("name", "out"),
+                        "strict": True,
+                        "schema": schema,
+                    },
+                }
+            elif m in _GROQ_BESTEFFORT_MODELS:
+                # Best-effort mode
+                body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": rf.get("name", "out"),
+                        "strict": False,
+                        "schema": rf["schema"],
+                    },
+                }
+            else:
+                # Fallback: json_object mode + schema hint in system message
+                body["response_format"] = {"type": "json_object"}
+                msgs = body.get("messages", [])
+                hint = f"\nRespond in JSON format matching this schema: {json.dumps(rf['schema'])}"
+                if msgs and msgs[0]["role"] == "system":
+                    msgs[0]["content"] = (msgs[0].get("content") or "") + hint
+                else:
+                    msgs.insert(0, {"role": "system", "content": hint.strip()})
+        elif rf.get("type") == "json_object":
+            body["response_format"] = {"type": "json_object"}
+            msgs = body.get("messages", [])
+            has_json_word = any("json" in (m.get("content", "") or "").lower() for m in msgs)
+            if not has_json_word and msgs:
+                if msgs[0]["role"] == "system":
+                    msgs[0]["content"] = (msgs[0].get("content") or "") + "\nRespond in JSON format."
+                else:
+                    msgs.insert(0, {"role": "system", "content": "Respond in JSON format."})
 
 
 class CerebrasProvider(OpenAICompatProvider):
     name = "cerebras"
-    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True}
+    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True, "structured": True}
     def __init__(self, api_key, model):
         super().__init__(api_key, model, "https://api.cerebras.ai/v1")
+
+    def _apply_response_format(self, body, response_format):
+        """Cerebras structured output: strict json_schema with additionalProperties
+        false enforced recursively. Cerebras uses the same json_schema envelope as
+        OpenAI but requires strict schema compliance."""
+        if not response_format:
+            return
+        rf = response_format if isinstance(response_format, dict) else response_format.model_dump(by_alias=True)
+        if rf.get("type") == "json_schema" and rf.get("schema"):
+            schema = _groq_strict_schema(rf["schema"])  # reuse recursive strict helper
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": rf.get("name", "out"),
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+        elif rf.get("type") == "json_object":
+            body["response_format"] = {"type": "json_object"}
+            msgs = body.get("messages", [])
+            has_json_word = any("json" in (m.get("content", "") or "").lower() for m in msgs)
+            if not has_json_word and msgs:
+                if msgs[0]["role"] == "system":
+                    msgs[0]["content"] = (msgs[0].get("content") or "") + "\nRespond in JSON format."
+                else:
+                    msgs.insert(0, {"role": "system", "content": "Respond in JSON format."})
 
 
 class NvidiaProvider(OpenAICompatProvider):
     name = "nvidia"
-    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True, "structured": False}
+    capabilities = {**OpenAICompatProvider.capabilities, "reasoning": True, "structured": True}
     def __init__(self, api_key, model):
         super().__init__(api_key, model, "https://integrate.api.nvidia.com/v1")
+
+    def _apply_response_format(self, body, response_format):
+        """NVIDIA structured output via nvext.guided_json.
+        Falls back to standard json_schema first, then nvext if rejected."""
+        if not response_format:
+            return
+        rf = response_format if isinstance(response_format, dict) else response_format.model_dump(by_alias=True)
+        if rf.get("type") == "json_schema" and rf.get("schema"):
+            # Use nvext.guided_json — recommended by NVIDIA for reliability
+            body["nvext"] = {"guided_json": rf["schema"]}
+            # Also hint the model with response_format json_object
+            body["response_format"] = {"type": "json_object"}
+        elif rf.get("type") == "json_object":
+            body["response_format"] = {"type": "json_object"}
 
 
 class OpenRouterProvider(OpenAICompatProvider):
@@ -565,6 +707,8 @@ class GeminiProvider(BaseProvider):
             stop_norm = "tool_use" if tool_calls_out else (
                 "max_tokens" if stop == "MAX_TOKENS" else "end_turn"
             )
+            # V4: Gemini rate-limit headers
+            rl_headers = _extract_rate_limit_headers(r.headers)
             return {
                 "text": text,
                 "tool_calls": tool_calls_out,
@@ -576,6 +720,7 @@ class GeminiProvider(BaseProvider):
                 "model": m,
                 "tool_call_dialect": "native",
                 "reasoning_applied": reasoning_applied,
+                "rate_limit_headers": rl_headers,
             }
 
 
@@ -803,6 +948,7 @@ class OllamaProvider(BaseProvider):
                 "model": m,
                 "tool_call_dialect": dialect,
                 "reasoning_applied": False,
+                "rate_limit_headers": {},  # Ollama is local, no rate limits
             }
 
 
@@ -851,6 +997,9 @@ def model_capabilities(provider_name: str, model: str, default_caps: dict) -> di
         caps["reasoning"] = False
     if provider_name in ("groq", "cerebras", "nvidia", "openrouter", "github"):
         caps["reasoning"] = _model_supports_reasoning(model)
+    # Groq: structured output depends on model
+    if provider_name == "groq":
+        caps["structured"] = model in _GROQ_BESTEFFORT_MODELS or model in _GROQ_STRICT_MODELS
     return caps
 
 

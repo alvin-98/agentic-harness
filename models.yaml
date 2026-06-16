@@ -1,0 +1,2223 @@
+failover_strategy: breadth
+gateway_port: 8101
+llm_order:
+- openrouter
+- cerebras
+- groq
+- gemini
+- sglang
+tier_order:
+  TINY:
+  - github
+  - openrouter
+  - cerebras
+  - gemini
+  - ollama
+  LARGE:
+  - cerebras
+  - gemini
+  - openrouter
+  - ollama
+  HUGE:
+  - openrouter
+  - groq
+router_order:
+- sglang
+- cerebras
+providers:
+  openrouter:
+    api_key_env: OPEN_ROUTER_API_KEY
+    base_url: https://openrouter.ai/api/v1
+    discover_free: true
+    models:
+    - id: nvidia/nemotron-3-super-120b-a12b:free
+      rpm_limit: 20
+      rpd_limit: 50
+      tpm_limit: 99999999
+      cooldown: 3
+      max_ctx: 100000
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3-ultra-550b-a55b:free
+      rpm_limit: 20
+      rpd_limit: 50
+      tpm_limit: 99999999
+      cooldown: 3
+      max_ctx: 100000
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nex-agi/nex-n2-pro:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262144
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3.5-content-safety:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 128000
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: openrouter/owl-alpha
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 1048756
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 256000
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: poolside/laguna-xs.2:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262144
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: poolside/laguna-m.1:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262144
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-4-26b-a4b-it:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262144
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-4-31b-it:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262144
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/lyria-3-pro-preview
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/lyria-3-clip-preview
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: openrouter/free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 200000
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: liquid/lfm-2.5-1.2b-thinking:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 32768
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: liquid/lfm-2.5-1.2b-instruct:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 32768
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3-nano-30b-a3b:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 256000
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-nano-12b-v2-vl:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 128000
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: qwen/qwen3-next-80b-a3b-instruct:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262144
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-nano-9b-v2:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 128000
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: openai/gpt-oss-120b:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 131072
+      structured: false
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: openai/gpt-oss-20b:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: qwen/qwen3-coder:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262000
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: cognitivecomputations/dolphin-mistral-24b-venice-edition:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 32768
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta-llama/llama-3.3-70b-instruct:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 65536
+      structured: false
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta-llama/llama-3.2-3b-instruct:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 131072
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nousresearch/hermes-3-llama-3.1-405b:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 131072
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+  cerebras:
+    api_key_env: CEREBRAS_API_KEY
+    base_url: https://api.cerebras.ai/v1
+    models:
+    - id: gpt-oss-120b
+      rpm_limit: 5
+      rpd_limit: 2400
+      tpm_limit: 30000
+      cooldown: 2
+      max_ctx: 8000
+      tokens_per_day: 1000000
+      structured: true
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+  nvidia:
+    api_key_env: NVIDIA_API_KEY
+    base_url: https://integrate.api.nvidia.com/v1
+    models:
+    - id: deepseek-ai/deepseek-v4-flash
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      max_ctx: 100000
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: 01-ai/yi-large
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: abacusai/dracarys-llama-3.1-70b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: adept/fuyu-8b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: ai21labs/jamba-1.5-large-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: aisingapore/sea-lion-7b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: baai/bge-m3
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: bigcode/starcoder2-15b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: bytedance/seed-oss-36b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: databricks/dbrx-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: deepseek-ai/deepseek-coder-6.7b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: deepseek-ai/deepseek-v4-pro
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/codegemma-1.1-7b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/codegemma-7b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/deplot
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/diffusiongemma-26b-a4b-it
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-2-2b-it
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-2b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-3-12b-it
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-3-4b-it
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-3n-e2b-it
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-3n-e4b-it
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/gemma-4-31b-it
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: google/recurrentgemma-2b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: ibm/granite-3.0-3b-a800m-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: ibm/granite-3.0-8b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: ibm/granite-34b-code-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: ibm/granite-8b-code-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/codellama-70b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-3.1-70b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-3.1-8b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-3.2-11b-vision-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-3.2-1b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-3.2-3b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-3.2-90b-vision-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-3.3-70b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-4-maverick-17b-128e-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama-guard-4-12b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta/llama2-70b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: microsoft/kosmos-2
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: microsoft/phi-3-vision-128k-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: microsoft/phi-3.5-moe-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: microsoft/phi-4-mini-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: microsoft/phi-4-multimodal-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: minimaxai/minimax-m2.7
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: minimaxai/minimax-m3
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/codestral-22b-instruct-v0.1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/ministral-14b-instruct-2512
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mistral-7b-instruct-v0.3
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mistral-large
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mistral-large-2-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mistral-large-3-675b-instruct-2512
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mistral-medium-3.5-128b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mistral-nemotron
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mistral-small-4-119b-2603
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mixtral-8x22b-v0.1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: mistralai/mixtral-8x7b-instruct-v0.1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: moonshotai/kimi-k2.6
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nv-mistralai/mistral-nemo-12b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/ai-synthetic-video-detector
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/cosmos-reason2-8b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/embed-qa-4
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/gliner-pii
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/ising-calibration-1-35b-a3b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.1-nemoguard-8b-content-safety
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.1-nemoguard-8b-topic-control
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.1-nemotron-51b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.1-nemotron-70b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.1-nemotron-nano-8b-v1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.1-nemotron-nano-vl-8b-v1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.1-nemotron-safety-guard-8b-v3
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.1-nemotron-ultra-253b-v1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.2-nv-embedqa-1b-v1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.3-nemotron-super-49b-v1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-3.3-nemotron-super-49b-v1.5
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-nemotron-embed-1b-v2
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama-nemotron-embed-vl-1b-v2
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/llama3-chatqa-1.5-70b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/mistral-nemo-minitron-8b-8k-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemoretriever-parse
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3-content-safety
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3-nano-30b-a3b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3-super-120b-a12b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3-ultra-550b-a55b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-3.5-content-safety
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-4-340b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-4-340b-reward
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-content-safety-reasoning-4b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-mini-4b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-nano-12b-v2-vl
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-nano-3-30b-a3b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nemotron-parse
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/neva-22b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nv-embed-v1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nv-embedcode-7b-v1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nv-embedqa-e5-v5
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nv-embedqa-mistral-7b-v2
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nvclip
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/nvidia-nemotron-nano-9b-v2
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/riva-translate-4b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/riva-translate-4b-instruct-v1.1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nvidia/vila
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: openai/gpt-oss-120b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: openai/gpt-oss-20b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: qwen/qwen3-next-80b-a3b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: qwen/qwen3.5-122b-a10b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: qwen/qwen3.5-397b-a17b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: sarvamai/sarvam-m
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: snowflake/arctic-embed-l
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: stepfun-ai/step-3.5-flash
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: stepfun-ai/step-3.7-flash
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: stockmark/stockmark-2-100b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: upstage/solar-10.7b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: writer/palmyra-creative-122b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: writer/palmyra-fin-70b-32k
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: writer/palmyra-med-70b
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: writer/palmyra-med-70b-32k
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: z-ai/glm-5.1
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: zyphra/zamba2-7b-instruct
+      rpm_limit: 40
+      rpd_limit: 9999
+      tpm_limit: 100000
+      cooldown: 2
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+  groq:
+    api_key_env: GROQ_API_KEY
+    base_url: https://api.groq.com/openai/v1
+    models:
+    - id: openai/gpt-oss-120b
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 100000
+      structured: true
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: llama-3.3-70b-versatile
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 100000
+      structured: false
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta-llama/llama-prompt-guard-2-22m
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 512
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: qwen/qwen3-32b
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 131072
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: groq/compound-mini
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 131072
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta-llama/llama-prompt-guard-2-86m
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 512
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: meta-llama/llama-4-scout-17b-16e-instruct
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 131072
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: canopylabs/orpheus-v1-english
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 4000
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: canopylabs/orpheus-arabic-saudi
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 4000
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: openai/gpt-oss-safeguard-20b
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 131072
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: whisper-large-v3-turbo
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 448
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: llama-3.1-8b-instant
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 131072
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: groq/compound
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 131072
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: openai/gpt-oss-20b
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 131072
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: allam-2-7b
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 4096
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: whisper-large-v3
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 448
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+  gemini:
+    api_key_env: GEMINI_API_KEY
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    models:
+    - id: gemini-2.5-flash
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.5-pro
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.0-flash
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.0-flash-001
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.0-flash-lite-001
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.0-flash-lite
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.5-flash-preview-tts
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 8192
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.5-pro-preview-tts
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 8192
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemma-4-26b-a4b-it
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 262144
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemma-4-31b-it
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 262144
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-flash-latest
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-flash-lite-latest
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-pro-latest
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.5-flash-lite
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.5-flash-image
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 32768
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3-pro-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3-flash-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.1-pro-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.1-pro-preview-customtools
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.1-flash-lite-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.1-flash-lite
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3-pro-image-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3-pro-image
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: nano-banana-pro-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.1-flash-image-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 65536
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.1-flash-image
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 65536
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.5-flash
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: lyria-3-clip-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: lyria-3-pro-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.1-flash-tts-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 8192
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-robotics-er-1.5-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 1048576
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-robotics-er-1.6-preview
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-2.5-computer-use-preview-10-2025
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: antigravity-preview-05-2026
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: deep-research-max-preview-04-2026
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: deep-research-preview-04-2026
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: deep-research-pro-preview-12-2025
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+  github:
+    api_key_env: GITHUB_ACCESS_TOKEN
+    base_url: https://models.github.ai/inference
+    models:
+    - id: openai/gpt-4.1-mini
+      rpm_limit: 10
+      rpd_limit: 50
+      tpm_limit: 99999999
+      cooldown: 6
+      max_ctx: 8000
+      structured: true
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+  sglang:
+    api_key_env: SGLANG_API_KEY
+    base_url_env: SGLANG_URL
+    base_url: http://127.0.0.1:30000/v1
+    models:
+    - id: qwen/qwen3.5-0.8B
+      rpm_limit: 9999
+      rpd_limit: 9999999
+      tpm_limit: 99999999
+      cooldown: 0
+      max_ctx: 32000
+      structured: true
+      type: text
+      visible: true
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+routers:
+  sglang:
+    model: qwen/qwen3.5-0.8B
+  github:
+    model: openai/gpt-4.1-mini
+  cerebras:
+    model: gpt-oss-120b
+  groq:
+    model: llama-3.3-70b-versatile

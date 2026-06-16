@@ -1,6 +1,8 @@
 """Python client for LLM Gateway V3. Adds auto_route kwarg on top of V2."""
-import os, json, httpx, time
+import os, json, httpx, time, structlog
 from typing import Any, Optional
+
+logger = structlog.get_logger(__name__)
 
 DEFAULT_URL = os.getenv("LLM_GATEWAY_V3_URL", "http://localhost:8101")
 
@@ -32,14 +34,37 @@ class LLM:
         }
         body = {k: v for k, v in body.items() if v is not None}
         url = f"{self.base_url}/v1/chat"
+        last_error_body = None
         for attempt in range(3):
             r = httpx.post(url, json=body, timeout=self.timeout)
             if r.status_code in (502, 503, 429):
+                try:
+                    last_error_body = r.json()
+                except Exception:
+                    last_error_body = {"raw": r.text[:500]}
+                logger.warning("llm_chat_retry",
+                               attempt=attempt + 1,
+                               status=r.status_code,
+                               provider=provider,
+                               model=model,
+                               error=last_error_body)
                 wait = 2 ** attempt
                 time.sleep(wait)
                 continue
             r.raise_for_status()
-            return r.json()
+            resp = r.json()
+            logger.debug("llm_chat_complete",
+                         provider=resp.get("provider"),
+                         model=resp.get("model"),
+                         latency_ms=resp.get("latency_ms"),
+                         input_tokens=resp.get("input_tokens"),
+                         output_tokens=resp.get("output_tokens"))
+            return resp
+        logger.error("llm_chat_failed",
+                     provider=provider,
+                     model=model,
+                     status=r.status_code,
+                     error=last_error_body)
         r.raise_for_status()
 
     def stream(self, prompt: str = None, *, messages=None, system=None,

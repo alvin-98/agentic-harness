@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>LLM Gateway V3 · Dashboard</title>
+<title>LLM Gateway V4 · Dashboard</title>
 <style>
   :root {
     --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #c9d1d9;
@@ -51,22 +51,40 @@
   .caps-row { margin-top: 8px; }
   .stat { display: inline-block; margin-right: 14px; font-size: 11px; color: var(--muted); }
   .stat b { color: var(--text); }
+  .model-ring { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+  .model-slot { font-size: 11px; padding: 3px 0; display: flex; justify-content: space-between; align-items: center; }
+  .model-slot.active { color: var(--green); font-weight: 500; }
+  .model-slot.exhausted { color: var(--muted); text-decoration: line-through; opacity: 0.5; }
+  .strategy-toggle { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-left: 12px; }
+  .strategy-toggle button { background: var(--panel); border: none; color: var(--muted); padding: 4px 12px; font-size: 11px; cursor: pointer; }
+  .strategy-toggle button.active { background: var(--accent); color: white; }
+  .strategy-toggle button:hover:not(.active) { background: #21262d; }
+  .card.exhausted-card { opacity: 0.5; border-color: var(--red); }
 </style>
 </head>
 <body>
 <header>
-  <h1>⚡ LLM Gateway <span style="color:var(--accent)">V3</span> <span class="badge" id="port-badge"></span></h1>
+  <h1>⚡ LLM Gateway <span style="color:var(--accent)">V4</span> <span class="badge" id="port-badge"></span></h1>
   <nav>
     <a href="/">Dashboard</a>
     <a href="/help">Help / Free Keys</a>
+    <a href="/v1/config">API: config</a>
     <a href="/v1/capabilities">API: capabilities</a>
     <a href="/v1/providers">API: providers</a>
-    <a href="/v1/routers">API: routers</a>
     <a href="/v1/status">API: status</a>
   </nav>
 </header>
 <main>
-  <h2>Failover order</h2>
+  <h2>Failover order
+    <span id="strategy-section" style="float:right; font-size:11px; text-transform:none; letter-spacing:0;">
+      strategy: <span class="strategy-toggle" id="strategy-toggle">
+        <button id="btn-breadth" onclick="setStrategy('breadth')">breadth</button>
+        <button id="btn-depth" onclick="setStrategy('depth')">depth</button>
+      </span>
+      <button onclick="updateModels()" style="margin-left:8px; font-size:11px; padding:3px 8px;">update models</button>
+      <button onclick="reloadConfig()" style="margin-left:4px; font-size:11px; padding:3px 8px;">reload</button>
+    </span>
+  </h2>
   <div id="order" class="order-list">loading…</div>
 
   <h2>Worker pool <span style="float:right; font-size:11px; text-transform:none; letter-spacing:0; color:var(--muted)">cache+tool aware routing</span></h2>
@@ -137,6 +155,15 @@ async function refresh() {
   const r = await fetch('/v1/status').then(r => r.json());
   document.getElementById('order').textContent = r.order.join(' → ');
 
+  // V4: load config for strategy toggle
+  try {
+    const cfg = await fetch('/v1/config').then(x => x.json());
+    if (cfg.loaded) {
+      document.getElementById('btn-breadth').className = cfg.failover_strategy === 'breadth' ? 'active' : '';
+      document.getElementById('btn-depth').className = cfg.failover_strategy === 'depth' ? 'active' : '';
+    }
+  } catch(e) {}
+
   const grid = document.getElementById('providers');
   const provSelect = document.getElementById('test-prov');
   const filterSelect = document.getElementById('filter-prov');
@@ -152,9 +179,23 @@ async function refresh() {
     card.className = 'card';
     const cdLeft = s.cooldown_remaining > 0 ? ` <span class="pill err">cooldown ${s.cooldown_remaining.toFixed(1)}s</span>` : '';
     const boLeft = s.backoff_remaining > 0 ? ` <span class="pill err" title="${s.backoff_reason}">backoff ${s.backoff_remaining.toFixed(0)}s</span>` : '';
+
+    // V4: model ring display
+    let ringHtml = '';
+    if (s.model_ring && s.model_ring.length > 1) {
+      ringHtml = '<div class="model-ring">';
+      s.model_ring.forEach((slot, idx) => {
+        const cls = slot.exhausted ? 'model-slot exhausted' : (s.active_model === slot.model ? 'model-slot active' : 'model-slot');
+        const hdrInfo = slot.rpm_remaining_header != null ? ` rpm:${slot.rpm_remaining_header}` : '';
+        const hdrInfoD = slot.rpd_remaining_header != null ? ` rpd:${slot.rpd_remaining_header}` : '';
+        ringHtml += `<div class="${cls}"><span>${idx+1}. ${slot.model}</span><span>${hdrInfo}${hdrInfoD}</span></div>`;
+      });
+      ringHtml += '</div>';
+    }
+
     card.innerHTML = `
       <div class="name">${name}${cdLeft}${boLeft}</div>
-      <div class="model">${s.model}</div>
+      <div class="model">${s.active_model || s.model}${s.active_index != null && s.model_ring ? ' <span class="badge">#'+(s.active_index+1)+'/'+s.model_ring.length+'</span>' : ''}</div>
       <div class="caps-row">${capPills(caps)}</div>
       <div style="margin-top:10px;">
         <div class="row"><span>RPM</span><b>${s.rpm_used} / ${s.rpm_limit}</b></div>
@@ -164,6 +205,7 @@ async function refresh() {
         <div class="row"><span>RPD</span><b>${s.rpd_used} / ${s.rpd_limit}</b></div>
         <div class="bar"><div class="${barClass(s.rpd_used, s.rpd_limit)}" style="width:${Math.min(100, s.rpd_used/s.rpd_limit*100)}%"></div></div>
       </div>
+      ${ringHtml}
       <div class="row" style="margin-top:10px;">
         <span class="stat">calls today <b>${today.calls || 0}</b></span>
         <span class="stat">tool calls <b>${today.tool_calls || 0}</b></span>
@@ -290,6 +332,31 @@ async function runTest() {
     out.textContent = '❌ ' + e.message;
   }
   refresh(); refreshRouters(); loadCalls();
+}
+
+async function setStrategy(s) {
+  try {
+    await fetch('/v1/config/strategy', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({strategy:s})});
+    refresh();
+  } catch(e) { console.error(e); }
+}
+
+async function reloadConfig() {
+  try {
+    const r = await fetch('/v1/config/reload', {method:'POST'});
+    const d = await r.json();
+    refresh();
+  } catch(e) { alert('Reload failed: ' + e.message); }
+}
+
+async function updateModels() {
+  try {
+    const r = await fetch('/v1/config/update', {method:'POST'});
+    const d = await r.json();
+    const lines = Object.entries(d.results || {}).map(([p, v]) => `${p}: discovered ${v.discovered}, added ${v.added}`);
+    alert(lines.length ? lines.join('\n') : 'No providers available for discovery');
+    refresh();
+  } catch(e) { alert('Update failed: ' + e.message); }
 }
 
 document.getElementById('port-badge').textContent = 'port ' + location.port;

@@ -28,6 +28,7 @@ from .logging_config import get_logger, LogContext, set_context
 logger = get_logger(__name__)
 
 MAX_ITERATIONS = 10
+DECISION_MAX_RETRIES = 2
 
 perception = perception_module.Perception()
 decision = decision_module.Decision()
@@ -152,17 +153,33 @@ async def run(query: str) -> str:
                     ))
                     logger.debug("artifact_attached", artifact_id=goal.attach_artifact_id)
 
-                out = decision.next_step(goal, hits, history, attached, tools)
+                out = None
+                for attempt in range(1, DECISION_MAX_RETRIES + 1):
+                    out = decision.next_step(goal, hits, history, attached, tools)
+                    if out.is_answer and not out.answer:
+                        logger.warning("decision_malformed",
+                                      goal_id=goal.id,
+                                      attempt=attempt,
+                                      detail="is_answer=True but answer is empty")
+                        continue
+                    if not out.is_answer and out.tool_call is None:
+                        logger.warning("decision_malformed",
+                                      goal_id=goal.id,
+                                      attempt=attempt,
+                                      detail="neither answer nor tool_call populated")
+                        continue
+                    break
+
                 logger.info("decision_complete",
                            is_answer=out.is_answer,
                            tool_name=out.tool_call.name if out.tool_call else None)
 
-                if out.is_answer:
+                if out.is_answer and out.answer:
                     history.append({"iter": it, "kind": "answer",
                                     "goal_id": goal.id, "text": out.answer})
                     logger.info("answer_produced",
                                goal_id=goal.id,
-                               answer_preview=out.answer[:200] if out.answer else None)
+                               answer_preview=out.answer)      
                     prior_goals = [
                         Goal(id=g.id, text=g.text, done=True, attach_artifact_id=g.attach_artifact_id)
                         if g.id == goal.id else g
@@ -172,7 +189,7 @@ async def run(query: str) -> str:
 
                 if out.tool_call is None:
                     logger.warning("decision_empty", goal_id=goal.id,
-                                   detail="DecisionOutput has neither answer nor tool_call")
+                                   detail="DecisionOutput has neither answer nor tool_call after retries")
                     history.append({"iter": it, "kind": "answer",
                                     "goal_id": goal.id,
                                     "text": "Unable to determine next action."})
@@ -193,7 +210,7 @@ async def run(query: str) -> str:
                 logger.info("action_complete",
                            tool=out.tool_call.name,
                            duration_ms=int((time.time() - action_start) * 1000),
-                           result_preview=result_text[:200],
+                           result_preview=result_text,
                            artifact_id=art_id,
                            has_artifact=art_id is not None)
 
@@ -207,7 +224,7 @@ async def run(query: str) -> str:
                 history.append({"iter": it, "kind": "action",
                                 "goal_id": goal.id, "tool": out.tool_call.name,
                                 "arguments": out.tool_call.arguments,
-                                "result_descriptor": result_text[:300],
+                                "result_descriptor": result_text,
                                 "artifact_id": art_id})
 
                 logger.debug("iteration_complete",
@@ -222,15 +239,15 @@ async def run(query: str) -> str:
                    total_actions=len([h for h in history if h.get("kind") == "action"]),
                    total_answers=len([h for h in history if h.get("kind") == "answer"]),
                    duration_ms=int((time.time() - start_time) * 1000),
-                   final_answer_preview=final[:200])
+                   final_answer_preview=final)
 
     return final
 
 def main() -> None:
-    query = "Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory."
-    # query = """Find 3 family-friendly things to do in Tokyo this weekend.
-# Check Saturday's weather forecast there and tell me which one
-# is most appropriate."""
+    # query = "Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory."
+    query = """Find 3 family-friendly things to do in Tokyo this weekend.
+Check Saturday's weather forecast there and tell me which one
+is most appropriate."""
     # query = """My mom's birthday is 15 May 2026. Remember that and give me
     #    a calendar reminder for two weeks before and on the day."""
     # query = "When is mom's birthday?"

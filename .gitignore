@@ -8,3 +8,4 @@ notebooks/*.ipynb
 src/agents/state/
 src/artifacts/
 src/logs/
+src/llm_gateway/*.db
