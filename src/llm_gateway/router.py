@@ -116,6 +116,7 @@ class RateState:
             "tpm_limit": limits["tpm"],
             "tokens_today": self.tokens_today,
             "tokens_per_day": limits.get("tokens_per_day"),
+            "cooldown": limits["cooldown"],
             "cooldown_remaining": max(0, limits["cooldown"] - (now - self.last_call)) if self.last_call else 0,
             "last_call": self.last_call,
             "backoff_remaining": max(0, self.unavailable_until - now),
@@ -144,6 +145,24 @@ class Router:
         if key not in self.model_state:
             self.model_state[key] = RateState()
         return self.model_state[key]
+
+    def _strategy(self) -> str:
+        return self.config.failover_strategy if self.config else "legacy"
+
+    def _record(self, name, model, slot_idx, outcome, reason, rate):
+        """Build one enriched attempt record. Keeps `provider`/`reason` keys so
+        the legacy `_attempts_str` helper keeps working, while adding the fields
+        the observability UI needs to reconstruct the full failover flow."""
+        return {
+            "provider": name,
+            "model": model,
+            "slot_index": slot_idx,
+            "strategy": self._strategy(),
+            "outcome": outcome,  # skipped | selected (mutated later to success/error)
+            "reason": reason,
+            "rate": rate,
+            "ts": time.time(),
+        }
 
     def candidates(self, override=None):
         if override:
@@ -259,31 +278,35 @@ class Router:
                 return None
             limits = LIMITS.get(name, {"rpm": 9999, "rpd": 9999999, "tpm": 99999999, "cooldown": 0, "max_ctx": 32000})
             model_id = prov.model
+            state = self.state[name]
             caps = getattr(prov, "capabilities", {})
             if required_caps:
                 missing = [c for c in required_caps if not caps.get(c)]
                 if missing:
-                    attempts.append({"provider": name, "model": model_id, "reason": f"skipped:no_{missing[0]}"})
+                    attempts.append(self._record(name, model_id, slot_idx, "skipped", f"skipped:no_{missing[0]}", state.snapshot(limits)))
                     return None
             if est_tokens > limits["max_ctx"]:
-                attempts.append({"provider": name, "model": model_id, "reason": f"prompt {est_tokens} > max_ctx {limits['max_ctx']}"})
+                attempts.append(self._record(name, model_id, slot_idx, "skipped", f"prompt {est_tokens} > max_ctx {limits['max_ctx']}", state.snapshot(limits)))
                 return None
-            ok, why = self.state[name].can_use(limits, est_tokens)
+            ok, why = state.can_use(limits, est_tokens)
             if ok:
+                attempts.append(self._record(name, model_id, slot_idx, "selected", "picked", state.snapshot(limits)))
                 return name, model_id, attempts
-            attempts.append({"provider": name, "model": model_id, "reason": why})
+            attempts.append(self._record(name, model_id, slot_idx, "skipped", why, state.snapshot(limits)))
             return None
 
         slot = pcfg.models[slot_idx]
+        limits = slot.limits_dict()
+        ms = self._get_model_state(name, slot.id)
 
         # Skip non-visible models
         if not slot.visible:
-            attempts.append({"provider": name, "model": slot.id, "reason": "not visible"})
+            attempts.append(self._record(name, slot.id, slot_idx, "skipped", "not visible", ms.snapshot(limits)))
             return None
 
         # Skip exhausted models
         if slot.exhausted:
-            attempts.append({"provider": name, "model": slot.id, "reason": "exhausted"})
+            attempts.append(self._record(name, slot.id, slot_idx, "skipped", "exhausted", ms.snapshot(limits)))
             return None
 
         # Check capabilities
@@ -292,32 +315,31 @@ class Router:
             for cap in required_caps:
                 if cap == "structured" and slot.structured is not None:
                     if not slot.structured:
-                        attempts.append({"provider": name, "model": slot.id, "reason": f"skipped:no_structured (model)"})
+                        attempts.append(self._record(name, slot.id, slot_idx, "skipped", "skipped:no_structured (model)", ms.snapshot(limits)))
                         return None
                 elif not caps.get(cap):
-                    attempts.append({"provider": name, "model": slot.id, "reason": f"skipped:no_{cap}"})
+                    attempts.append(self._record(name, slot.id, slot_idx, "skipped", f"skipped:no_{cap}", ms.snapshot(limits)))
                     return None
 
         # Check context length
-        limits = slot.limits_dict()
         if est_tokens > limits["max_ctx"]:
-            attempts.append({"provider": name, "model": slot.id, "reason": f"prompt {est_tokens} > max_ctx {limits['max_ctx']}"})
+            attempts.append(self._record(name, slot.id, slot_idx, "skipped", f"prompt {est_tokens} > max_ctx {limits['max_ctx']}", ms.snapshot(limits)))
             return None
 
         # Check provider-reported remaining (headers take precedence)
         if slot.rpm_remaining is not None and slot.rpm_remaining <= 0:
-            attempts.append({"provider": name, "model": slot.id, "reason": "RPM exhausted (header)"})
+            attempts.append(self._record(name, slot.id, slot_idx, "skipped", "RPM exhausted (header)", ms.snapshot(limits)))
             return None
         if slot.rpd_remaining is not None and slot.rpd_remaining <= 0:
-            attempts.append({"provider": name, "model": slot.id, "reason": "RPD exhausted (header)"})
+            attempts.append(self._record(name, slot.id, slot_idx, "skipped", "RPD exhausted (header)", ms.snapshot(limits)))
             return None
 
         # Check local rate state
-        ms = self._get_model_state(name, slot.id)
         ok, why = ms.can_use(limits, est_tokens)
         if ok:
+            attempts.append(self._record(name, slot.id, slot_idx, "selected", "picked", ms.snapshot(limits)))
             return name, slot.id, attempts
-        attempts.append({"provider": name, "model": slot.id, "reason": why})
+        attempts.append(self._record(name, slot.id, slot_idx, "skipped", why, ms.snapshot(limits)))
         return None
 
     def record_call(self, provider: str, model: str, tokens: int = 0):

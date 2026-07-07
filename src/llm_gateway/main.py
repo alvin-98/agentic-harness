@@ -142,7 +142,10 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
     for name in router_pool.candidates():
         ok, why = router_pool.state[name].can_use(LIMITS[name], 400)
         if not ok:
-            router_attempts.append({"provider": name, "model": router_pool.providers[name].model, "status": "skipped", "reason": why})
+            router_attempts.append({"provider": name, "model": router_pool.providers[name].model,
+                                    "status": "skipped", "reason": why,
+                                    "rate": router_pool.state[name].snapshot(LIMITS[name]),
+                                    "ts": time.time()})
             continue
         provider = router_pool.providers[name]
         t0 = time.time()
@@ -186,19 +189,23 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
                 router_attempts.append({
                     "provider": name, "model": result.get("model", provider.model),
                     "status": "unparseable", "latency_ms": latency,
-                    "raw_reply": raw_text[:300],
+                    "raw_reply": raw_text,
+                    "rate": router_pool.state[name].snapshot(LIMITS[name]),
+                    "ts": time.time(),
                 })
                 db.log_call(provider=name, model=result.get("model", provider.model),
                             input_tokens=result.get("input_tokens", 0),
                             output_tokens=result.get("output_tokens", 0),
                             latency_ms=latency, status="error",
-                            error=f"unparseable tier reply: {raw_text[:300]}",
+                            error=f"unparseable tier reply: {raw_text}",
                             prompt_chars=len(envelope),
                             call_role=call_role, router_decision="unparseable")
                 continue
             router_attempts.append({
                 "provider": name, "model": result.get("model", provider.model),
                 "status": "ok", "tier": tier, "latency_ms": latency,
+                "rate": router_pool.state[name].snapshot(LIMITS[name]),
+                "ts": time.time(),
             })
             db.log_call(provider=name, model=result.get("model", provider.model),
                         input_tokens=result.get("input_tokens", 0),
@@ -218,10 +225,12 @@ async def _classify_tier(req: ChatRequest, role: str, router_pool: RouterPool, p
             router_attempts.append({
                 "provider": name, "model": provider.model,
                 "status": "error", "latency_ms": latency,
-                "error": str(e)[:300],
+                "error": str(e),
+                "rate": router_pool.state[name].snapshot(LIMITS[name]),
+                "ts": time.time(),
             })
             db.log_call(provider=name, model=provider.model,
-                        status="error", error=str(e)[:500],
+                        status="error", error=str(e),
                         latency_ms=latency, call_role=call_role,
                         router_decision="error")
             # Move on to the next router. No backoff for routing — keep the
@@ -340,6 +349,23 @@ def _attempts_str(attempts):
     return "; ".join(f"{a['provider']}:{a['reason']}" for a in attempts)
 
 
+def _mark_attempt_error(selected_rec, name, model, err, t0, backoff_secs=0, backoff_reason=""):
+    """Record that the chosen model was actually called and failed. Mutates the
+    existing 'selected' attempt record in place so the observability trace shows
+    the true outcome (error) of the picked model, plus any backoff applied."""
+    reason = f"failed: {err}"
+    if backoff_secs and backoff_secs > 0:
+        reason += f" → backoff {backoff_secs:.0f}s ({backoff_reason})"
+    if selected_rec is not None:
+        selected_rec["outcome"] = "error"
+        selected_rec["reason"] = reason
+        selected_rec["error"] = str(err)
+        selected_rec["status"] = getattr(err, "status", None)
+        selected_rec["latency_ms"] = int((time.time() - t0) * 1000)
+        selected_rec["backoff_secs"] = backoff_secs
+        selected_rec["model"] = model
+
+
 def _required_caps(req: ChatRequest):
     caps = []
     if req.tools: caps.append("tools")
@@ -385,6 +411,7 @@ async def chat(req: ChatRequest):
 
     all_attempts = []
     last_err = None
+    structured_validation_failed = False
 
     # When explicit provider is requested and the only blocker is cooldown,
     # wait briefly rather than 503-ing — this is what users intuitively expect.
@@ -409,6 +436,10 @@ async def chat(req: ChatRequest):
     for _ in range(max_iters):
         name, atts = router.pick(est, candidates, required_caps=required_caps)
         all_attempts.extend(atts)
+        # The last record from a successful pick is the "selected" model — we
+        # mutate its outcome (success/error) once the call resolves so the
+        # observability trace shows exactly what happened to the chosen model.
+        selected_rec = all_attempts[-1] if (all_attempts and all_attempts[-1].get("outcome") == "selected") else None
         if name is None:
             break
 
@@ -448,11 +479,11 @@ async def chat(req: ChatRequest):
                         yield f"data: {json.dumps({'done': True, 'provider': name})}\n\n"
                     except Exception as e:
                         db.log_call(provider=name, model=use_model or provider.model,
-                                    status="error", error=str(e)[:500],
+                                    status="error", error=str(e),
                                     latency_ms=int((time.time() - t0) * 1000),
                                     prompt_chars=len(prompt_text),
                                     override=req.provider, attempted=_attempts_str(all_attempts))
-                        yield f"data: {json.dumps({'error': str(e)[:300]})}\n\n"
+                        yield f"data: {json.dumps({'error': str(e)})}\n\n"
                 return StreamingResponse(gen(), media_type="text/event-stream")
 
             result = await provider.chat(messages,
@@ -488,7 +519,25 @@ async def chat(req: ChatRequest):
                     try:
                         parsed = _validate_structured(result["text"], req.response_format.schema_)
                     except (ValueError, ValidationError) as ve2:
-                        raise HTTPException(503, f"structured output failed validation: {ve2}")
+                        # Malformed structured output. Treat like a provider failure so it
+                        # (a) shows up in the failover trace and (b) fails over to the next
+                        # model instead of aborting. Short backoff stops the breadth sweep
+                        # from immediately re-picking this same model.
+                        structured_validation_failed = True
+                        last_err = f"structured output failed validation: {ve2}"
+                        err_model = use_model or provider.model
+                        router.mark_model_unavailable(name, err_model, 5, "bad structured output")
+                        db.log_call(provider=name, model=err_model, status="error",
+                                    error=last_err, latency_ms=int((time.time() - t0) * 1000),
+                                    prompt_chars=len(prompt_text),
+                                    override=req.provider, attempted=_attempts_str(all_attempts))
+                        _mark_attempt_error(selected_rec, name, err_model, ve2, t0,
+                                            backoff_secs=5, backoff_reason="bad structured output")
+                        if explicit_override:
+                            raise HTTPException(502, f"{name} failed: {last_err}")
+                        if not router.config:
+                            candidates = [c for c in candidates if c != name]
+                        continue
 
             tokens = (result["input_tokens"] or 0) + (result["output_tokens"] or 0)
             router.state[name].tokens_today += tokens
@@ -510,6 +559,11 @@ async def chat(req: ChatRequest):
             if router_decision is not None:
                 router_decision.chosen_worker_provider = name
                 router_decision.chosen_worker_model = actual_model
+            if selected_rec is not None:
+                selected_rec["outcome"] = "success"
+                selected_rec["reason"] = "ok"
+                selected_rec["latency_ms"] = latency
+                selected_rec["model"] = actual_model
             db.log_call(provider=name, model=actual_model,
                         input_tokens=result["input_tokens"], output_tokens=result["output_tokens"],
                         cache_create_tokens=result["cache_creation_input_tokens"],
@@ -547,13 +601,12 @@ async def chat(req: ChatRequest):
             if secs > 0:
                 router.mark_model_unavailable(name, err_model, secs, reason)
             db.log_call(provider=name, model=err_model,
-                        status="error", error=str(e)[:500],
+                        status="error", error=str(e),
                         latency_ms=int((time.time() - t0) * 1000),
                         prompt_chars=len(prompt_text),
                         override=req.provider, attempted=_attempts_str(all_attempts))
-            tag = f"failed: {str(e)[:100]}"
-            if secs > 0: tag += f" → backoff {secs:.0f}s ({reason})"
-            all_attempts.append({"provider": name, "model": err_model, "reason": tag})
+            _mark_attempt_error(selected_rec, name, err_model, e, t0,
+                                backoff_secs=secs, backoff_reason=reason)
             if explicit_override or not getattr(e, "retryable", True):
                 raise HTTPException(502, f"{name} failed: {e}")
             # V4: don't remove provider from candidates — other models may be available
@@ -569,18 +622,25 @@ async def chat(req: ChatRequest):
             if secs > 0:
                 router.mark_model_unavailable(name, err_model, secs, reason)
             db.log_call(provider=name, model=err_model,
-                        status="error", error=str(e)[:500],
+                        status="error", error=str(e),
                         latency_ms=int((time.time() - t0) * 1000),
                         prompt_chars=len(prompt_text),
                         override=req.provider, attempted=_attempts_str(all_attempts))
-            all_attempts.append({"provider": name, "model": err_model, "reason": f"exception: {str(e)[:120]}"})
+            _mark_attempt_error(selected_rec, name, err_model, e, t0,
+                                backoff_secs=secs, backoff_reason=reason)
             if explicit_override:
                 raise HTTPException(502, f"{name} failed: {e}")
             if not router.config:
                 candidates = [c for c in candidates if c != name]
             continue
 
-    raise HTTPException(503, f"all providers unavailable. attempts: {all_attempts}. last_error: {last_err}")
+    terminal_status = 422 if structured_validation_failed else 503
+    raise HTTPException(terminal_status, detail={
+        "error": "structured_validation_failed" if structured_validation_failed else "all_providers_unavailable",
+        "attempts": all_attempts,
+        "last_error": last_err,
+        "router_decision": router_decision.model_dump() if router_decision else None,
+    })
 
 
 @app.post("/v1/embed")
@@ -611,7 +671,7 @@ async def embed(req: EmbedRequest):
             provider=req.provider or "(any)",
             model="(none)",
             status="error",
-            error=str(e)[:500],
+            error=str(e),
             latency_ms=latency,
             prompt_chars=len(req.text),
             override=req.provider,

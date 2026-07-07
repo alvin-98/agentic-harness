@@ -7,6 +7,24 @@ logger = structlog.get_logger(__name__)
 DEFAULT_URL = os.getenv("LLM_GATEWAY_V3_URL", "http://localhost:8101")
 
 
+class GatewayError(Exception):
+    """Raised when the gateway returns a non-recoverable error after exhausting
+    its own retries. Carries the structured error body so callers (and the
+    observability instrumentation) can see the full failover trace — the
+    ordered list of model attempts and why each one was skipped or failed."""
+
+    def __init__(self, message, status=None, body=None):
+        super().__init__(message)
+        self.status = status
+        self.body = body
+        self.attempts = []
+        self.router_decision = None
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if isinstance(detail, dict):
+            self.attempts = detail.get("attempts", []) or []
+            self.router_decision = detail.get("router_decision")
+
+
 class LLM:
     def __init__(self, base_url: str = DEFAULT_URL, timeout: float = 600):
         self.base_url = base_url.rstrip("/")
@@ -41,7 +59,7 @@ class LLM:
                 try:
                     last_error_body = r.json()
                 except Exception:
-                    last_error_body = {"raw": r.text[:500]}
+                    last_error_body = {"raw": r.text}
                 logger.warning("llm_chat_retry",
                                attempt=attempt + 1,
                                status=r.status_code,
@@ -51,7 +69,16 @@ class LLM:
                 wait = 2 ** attempt
                 time.sleep(wait)
                 continue
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # Non-retryable error (e.g. 422 structured-validation failure, 400,
+                # non-retry 5xx). Surface the structured body via GatewayError so the
+                # failover trace is preserved instead of a bare HTTPStatusError.
+                try:
+                    err_body = r.json()
+                except Exception:
+                    err_body = {"raw": r.text}
+                raise GatewayError(f"gateway {r.status_code}: {err_body}",
+                                   status=r.status_code, body=err_body)
             resp = r.json()
             logger.debug("llm_chat_complete",
                          provider=resp.get("provider"),
@@ -65,7 +92,11 @@ class LLM:
                      model=model,
                      status=r.status_code,
                      error=last_error_body)
-        r.raise_for_status()
+        raise GatewayError(
+            f"gateway {r.status_code} after retries: {last_error_body}",
+            status=r.status_code,
+            body=last_error_body if isinstance(last_error_body, dict) else {"raw": last_error_body},
+        )
 
     def stream(self, prompt: str = None, *, messages=None, system=None,
                provider: str = None, model: str = None,

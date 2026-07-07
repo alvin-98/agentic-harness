@@ -104,7 +104,7 @@ class EmbedRateState:
         secs = BACKOFF_STEPS[idx]
         self.backoff_step += 1
         self.unavailable_until = time.time() + secs
-        self.unavailable_reason = reason[:80]
+        self.unavailable_reason = reason
 
     def snapshot(self) -> dict:
         self._gc()
@@ -203,11 +203,11 @@ class GeminiEmbedder(EmbeddingProvider):
         async with httpx.AsyncClient(timeout=60) as c:
             r = await c.post(url, json=body)
         if r.status_code != 200:
-            raise EmbedderError(f"gemini HTTP {r.status_code}: {r.text[:200]}", status=r.status_code)
+            raise EmbedderError(f"gemini HTTP {r.status_code}: {r.text}", status=r.status_code)
         d = r.json()
         vec = ((d.get("embedding") or {}).get("values")) or []
         if not vec:
-            raise EmbedderError(f"gemini returned no embedding: {str(d)[:200]}")
+            raise EmbedderError(f"gemini returned no embedding: {str(d)}")
         return {"embedding": vec, "model": self.model, "dim": len(vec)}
 
 
@@ -281,7 +281,7 @@ async def embed_with_failover(
             return e.name, out, attempts, latency
         except Exception as exc:
             last_err = exc
-            reason = str(exc)[:200]
+            reason = str(exc)
             e.state.mark_failure(reason)
             attempts.append({"provider": e.name, "reason": reason})
             if explicit:

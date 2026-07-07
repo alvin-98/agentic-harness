@@ -265,7 +265,7 @@ class OpenAICompatProvider(BaseProvider):
                     r = await c.post(f"{self.base_url}/chat/completions", headers=self._headers(), json=body)
                 if r.status_code != 200:
                     raise ProviderError(
-                        f"{self.name} HTTP {r.status_code}: {r.text[:300]}",
+                        f"{self.name} HTTP {r.status_code}: {r.text}",
                         status=r.status_code,
                         retryable=(r.status_code not in (400, 401)),
                     )
@@ -341,7 +341,7 @@ class OpenAICompatProvider(BaseProvider):
             async with c.stream("POST", f"{self.base_url}/chat/completions",
                                 headers=self._headers(), json=body) as r:
                 if r.status_code != 200:
-                    text = (await r.aread()).decode("utf-8", "ignore")[:300]
+                    text = (await r.aread()).decode("utf-8", "ignore")
                     raise ProviderError(f"{self.name} HTTP {r.status_code}: {text}", status=r.status_code)
                 async for line in r.aiter_lines():
                     if not line or not line.startswith("data: "):
@@ -674,14 +674,14 @@ class GeminiProvider(BaseProvider):
                     r = await c.post(url, json=body)
                 if r.status_code != 200:
                     raise ProviderError(
-                        f"gemini HTTP {r.status_code}: {r.text[:400]}",
+                        f"gemini HTTP {r.status_code}: {r.text}",
                         status=r.status_code,
                         retryable=(r.status_code not in (400, 401)),
                     )
             d = r.json()
             cands = d.get("candidates") or []
             if not cands:
-                raise ProviderError(f"gemini no candidates: {json.dumps(d)[:200]}", status=200, retryable=True)
+                raise ProviderError(f"gemini no candidates: {json.dumps(d)}", status=200, retryable=True)
             parts = cands[0].get("content", {}).get("parts", []) or []
             text = "".join(p.get("text", "") for p in parts if "text" in p)
             tool_calls_out = []
@@ -913,7 +913,7 @@ class OllamaProvider(BaseProvider):
         async with httpx.AsyncClient(timeout=600) as c:
             r = await c.post(f"{self.base_url}/api/chat", json=body)
             if r.status_code != 200:
-                raise ProviderError(f"ollama HTTP {r.status_code}: {r.text[:300]}", status=r.status_code)
+                raise ProviderError(f"ollama HTTP {r.status_code}: {r.text}", status=r.status_code)
             d = r.json()
             msg = d.get("message", {}) or {}
             text = msg.get("content", "") or ""
