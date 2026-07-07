@@ -1,12 +1,17 @@
 """
-MCP server for EAGV3 Session 6.
+MCP server for the agent.
 
-Nine tools, stdio transport:
+Eleven tools, stdio transport:
     web_search, fetch_url, get_time, currency_convert,
-    read_file, list_dir, create_file, update_file, edit_file
+    read_file, list_dir, create_file, update_file, edit_file,
+    index_document, search_knowledge
 
-web_search:  Tavily primary, DuckDuckGo fallback. Hard-capped at 5 results.
-fetch_url:   crawl4ai only — clean markdown via headless Chromium.
+web_search:      Tavily primary, DuckDuckGo fallback. Hard-capped at 5 results.
+fetch_url:       crawl4ai only — clean markdown via headless Chromium.
+index_document:  Chunks a sandbox file or artifact and writes the chunks as
+                 fact records into Memory, where they become FAISS-searchable.
+search_knowledge: Vector search over indexed facts.
+
 Usage for tavily and duckduckgo is logged to ./usage.json with monthly
 rollover and a soft cap of 950/1000 on Tavily.
 
@@ -31,10 +36,11 @@ from ddgs import DDGS
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from agents.memory import Memory
+from agents.artifacts import ArtifactStore
 
 MAX_SEARCH_RESULTS = 5  # hard cap — Tavily prices per result
 
-load_dotenv(Path(__file__).parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 mcp = FastMCP("eagv3-s6-server")
 
@@ -128,7 +134,22 @@ def _ddg_search(query: str, max_results: int) -> list[dict]:
 
 
 async def _crawl4ai_fetch(url: str) -> dict:
-    from crawl4ai import AsyncWebCrawler
+    from crawl4ai import (
+        AsyncWebCrawler,
+        CrawlerRunConfig,
+        DefaultMarkdownGenerator,
+        PruningContentFilter,
+    )
+
+    # Prune boilerplate (nav bars, sidebars, footers, ad blocks) at the source so
+    # the artifact holds article content instead of page chrome. PruningContentFilter
+    # scores DOM blocks by text/link density and drops low-signal ones; the cleaned
+    # result surfaces as markdown.fit_markdown.
+    run_config = CrawlerRunConfig(
+        markdown_generator=DefaultMarkdownGenerator(
+            content_filter=PruningContentFilter(threshold=0.48, threshold_type="fixed"),
+        ),
+    )
 
     # crawl4ai uses Rich which writes via its own captured stdout reference, so
     # contextlib.redirect_stdout doesn't catch it. Redirect at the file-descriptor
@@ -138,17 +159,18 @@ async def _crawl4ai_fetch(url: str) -> dict:
     os.dup2(2, 1)
     try:
         async with AsyncWebCrawler(verbose=False) as crawler:
-            r = await crawler.arun(url=url)
+            r = await crawler.arun(url=url, config=run_config)
     finally:
         os.dup2(saved_fd, 1)
         os.close(saved_fd)
     # r.markdown is a str subclass (StringCompatibleMarkdown) that Pydantic
     # serializes as {} because its real field is private. Pull the raw string
     # out and force a plain str so FastMCP serializes correctly.
+    # Prefer fit_markdown (boilerplate-pruned) over raw_markdown (full page).
     md = r.markdown
     raw = (
-        getattr(md, "raw_markdown", None)
-        or getattr(md, "fit_markdown", None)
+        getattr(md, "fit_markdown", None)
+        or getattr(md, "raw_markdown", None)
         or md
         or r.cleaned_html
         or r.html
@@ -185,7 +207,7 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
 
 @mcp.tool()
 async def fetch_url(url: str, timeout: int = 20) -> dict:
-    """Fetch clean markdown from a URL via crawl4ai (headless Chromium). Example: fetch_url("https://example.com")."""
+    """Fetch boilerplate-pruned markdown from a URL via crawl4ai (headless Chromium). Nav bars, sidebars, and ads are stripped; only main content is returned. Example: fetch_url("https://example.com")."""
     return await _crawl4ai_fetch(url)
 
 
@@ -317,35 +339,51 @@ def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str
     return chunks
 
 
+# Singleton artifact store for resolving art: handles in index_document.
+_artifact_store = ArtifactStore()
+
+
+def _read_for_index(path: str) -> tuple[str, str]:
+    """Return (content, source_label) for an indexable file or artifact.
+
+    Accepts both sandbox file paths and `art:` artifact handles. When given
+    an artifact handle, the bytes are loaded from the artifact store and
+    decoded as UTF-8."""
+    if path.startswith("art:"):
+        return _artifact_store.get_bytes(path).decode("utf-8", errors="replace"), path
+    p = _safe(path)
+    return p.read_text(encoding="utf-8"), f"sandbox:{path}"
+
+
 @mcp.tool()
 def index_document(path: str, chunk_size: int = 400, overlap: int = 80) -> dict:
     """Chunk a sandbox file or artifact and write the chunks into Memory as
     fact records, where they become FAISS-searchable for later queries.
     Use this when the content must be searchable across later turns or runs.
-    For one-shot inspection of a file's contents, use read_file."""
-    p = _safe(path)
-    if not p.exists():
-        raise FileNotFoundError(f"'{path}' does not exist in sandbox")
-    if not p.is_file():
-        raise ValueError(f"'{path}' is not a file")
+    For one-shot inspection of a file's contents, use read_file.
+    Accepts sandbox file paths or `art:` artifact handles."""
+    text, source = _read_for_index(path)
+    if not text.strip():
+        return {"ok": True, "path": path, "source": source, "chunks": 0}
 
-    text = p.read_text(encoding="utf-8")
     chunks = _chunk_text(text, chunk_size=chunk_size, overlap=overlap)
     if not chunks:
-        return {"ok": True, "path": path, "chunks": 0}
+        return {"ok": True, "path": path, "source": source, "chunks": 0}
 
     ids = []
     for i, chunk in enumerate(chunks):
+        preview = chunk[:120].replace("\n", " ")
+        descriptor = f"[{source} chunk {i+1}/{len(chunks)}] {preview}"
         item = _memory.add_fact(
-            descriptor=chunk[:200],  # first 200 chars as descriptor
-            value={"text": chunk, "chunk_index": i, "source_path": path},
-            keywords=[Path(path).stem, f"chunk_{i}"],
-            source=f"index_document:{path}",
+            descriptor=descriptor,
+            value={"chunk": chunk, "chunk_index": i, "total_chunks": len(chunks), "source": source},
+            keywords=[Path(path).stem if not path.startswith("art:") else path, f"chunk_{i}"],
+            source=source,
             run_id="mcp",
         )
         ids.append(item.id)
 
-    return {"ok": True, "path": path, "chunks": len(chunks), "memory_ids": ids}
+    return {"ok": True, "path": path, "source": source, "chunks": len(chunks), "memory_ids": ids}
 
 
 @mcp.tool()

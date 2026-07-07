@@ -40,21 +40,20 @@ MEMORY_SUMMARIZE_LLM   = LLMConfig(auto_route="memory", reasoning="off", max_tok
 # MEMORY_RELEVANCE_LLM   = LLMConfig(provider="sglang")
 
 
-# # Perception: goal decomposition, goal updates, artifact attachment
-PERCEPTION_DECOMPOSE_LLM  = LLMConfig(auto_route="perception")
-PERCEPTION_UPDATE_LLM     = LLMConfig(auto_route="perception")
-PERCEPTION_ARTIFACT_LLM   = LLMConfig(auto_route="perception")
-# PERCEPTION_DECOMPOSE_LLM  = LLMConfig(provider="sglang")
-# PERCEPTION_UPDATE_LLM     = LLMConfig(provider="sglang")
-# PERCEPTION_ARTIFACT_LLM   = LLMConfig(provider="sglang")
+# Perception: single call handles decomposition, goal updates, artifact
+# attachment, and goal extension. temperature=1.0 matches the S7 design —
+# the deterministic post-processing (defensive merge, dedup, SYNTHESIS_KW
+# guard) compensates for the higher sampling temperature.
+PERCEPTION_LLM = LLMConfig(auto_route="perception", temperature=1.0)
+# PERCEPTION_LLM = LLMConfig(provider="sglang")
 
-# # Decision: the heaviest call — main action selection
+# Decision: the heaviest call — main action selection
 DECISION_LLM = LLMConfig(auto_route="decision")
 # DECISION_LLM = LLMConfig(provider="sglang")
 
 # ── Memory Prompts ────────────────────────────────────────────────────────────
 
-MEMORY_RELEVANCE_SYSTEM_PROMPT = """You are a memory relevance ranker. Given a query and a list of memories, 
+MEMORY_RELEVANCE_SYSTEM_PROMPT = """You are a memory relevance ranker. Given a query and a list of memories,
 return the IDs of the most relevant memories as a JSON list of strings, ordered by relevance (most relevant first).
 Only return the JSON list, nothing else."""
 
@@ -88,84 +87,147 @@ MEMORY_SUMMARIZE_USER_PROMPT = (
 )
 
 
-# ── Perception Prompts ────────────────────────────────────────────────────────
+# ── Perception Prompt ─────────────────────────────────────────────────────────
+# A single system prompt for the single-call Perception. Covers decomposition
+# (iter 1), goal updates (iter 2+), artifact attachment, and goal extension.
+# Adapted from the S7 design with the position-based goal identity convention.
 
-PERCEPTION_SYSTEM_PROMPT = """
-You are a perception module for an agentic AI system. Respond in JSON.
-Your job is to analyze the user's query, the current memory hits, the run
-history, and the prior goal list to produce a fresh observation containing
-the current goals list with done flags and optional artifact attachments.
+PERCEPTION_SYSTEM_PROMPT = """\
+You are the Perception layer of an agent.
+Each iteration you see the user's query, the prior goal list, the
+current memory hits (descriptors only — never raw bytes), and the run
+history. Return the CURRENT goal list as JSON matching the schema.
+
+Goals are identified by POSITION in the output array. Always return
+the goals in the SAME ORDER as PRIOR GOALS. Do not reorder, do not
+drop a prior goal, do not add a goal in the middle.
+You MAY append new goals at the END when a discovery action on a
+prior turn (for example, listing the contents of a directory) reveals
+concrete items that were unknown at decomposition time. In that case
+keep all prior goals verbatim and append one new goal per concrete
+item, then re-append the original synthesis/report goal LAST so it
+stays the final step.
+
+You speak at the level of INTENT, not tool selection. Write each goal
+as a short imperative describing WHAT must happen, not WHICH tool
+will do it. Decision is the layer that maps intent to a tool; leave
+that choice to Decision. Example intent verbs you may use: fetch,
+open, list, look up the time, convert currency, save a note, make
+this content searchable, query the existing knowledge base, extract,
+summarise, compare, synthesise. Do not name specific tools.
+
+Procedure:
+1. If PRIOR GOALS is empty, decompose the query into one or more short
+   imperative goals (one per distinct part). If the query asks to
+   read/fetch/process N items ("top 3 results", "first 5 articles"),
+   emit a SEPARATE fetch goal for each item plus the final
+   synthesis goal — NOT a single umbrella goal.
+   If the query asks to ingest N files so they can be searched
+   later, emit one goal per file expressing that its content should
+   be made searchable, plus a final report goal.
+   If MEMORY HITS already contain `fact` items whose descriptors
+   start with `[sandbox:` or `[art:` (these mark previously-indexed
+   chunks of source documents), the next goal for any question
+   about that material is to QUERY THE EXISTING KNOWLEDGE BASE
+   rather than to re-fetch or re-open the original sources. Pair
+   that query goal with a final synthesis/answer goal — never emit
+   a knowledge-base query as the only goal, because the user still
+   needs an answer produced from the returned chunks.
+   Whenever the user's query is a question (rather than a pure
+   action like 'save X' or 'fetch Y'), the LAST goal in your
+   decomposition must be a synthesis/answer goal that emits the
+   final reply (verbs like answer, tell, summarise, compare, list,
+   extract, identify, describe).
+2. Otherwise copy each prior goal's `text` verbatim into the same slot.
+   Mark `done: true` the moment RUN HISTORY shows an action satisfying
+   it. Once done, leave it done in every later iteration.
+   "Search" is satisfied by a web_search action. "Read" or "Fetch" is
+   satisfied only by a fetch_url action for the relevant URL — a search
+   snippet alone does NOT satisfy a read/fetch goal.
+   If the goal mentions a quantity (e.g., "top 3 results"), the history
+   must contain that many matching actions.
+   If in doubt, leave the goal as not done.
+3. For the FIRST unfinished goal (lowest-index slot with done=false),
+   set `send_artifact: true` whenever ANY of these apply:
+     - the goal text contains extract / summarise / list / synthesise /
+       analyse / evaluate / select / compare / pick / choose / decide;
+     - the goal needs information that lives inside a fetched page or
+       file rather than just in the short descriptor.
+   In that case pick `artifact_index` = the `i` value (0, 1, 2, ...)
+   of the most relevant MEMORY HITS entry (entries whose `i` is null
+   are not artifacts and cannot be picked). When in doubt, attach the
+   most recent artifact whose descriptor matches the goal topic.
+4. Only when the goal is purely fetch / search / compute / open / time
+   should you leave `send_artifact: false` and `artifact_index: null`.
+
+Example. Given
+  MEMORY HITS: [{"i":0,"artifact_id":"art:aaa","descriptor":\
+"page fetch result -> art:aaa"}]
+  PRIOR GOALS: [{"text":"Fetch the page","done":false,\
+"send_artifact":false,"artifact_index":null},
+                {"text":"Extract X","done":false,\
+"send_artifact":false,"artifact_index":null}]
+return:
+  {"goals":[
+    {"text":"Fetch the page","done":true,\
+"send_artifact":false,"artifact_index":null},
+    {"text":"Extract X","done":false,\
+"send_artifact":true,"artifact_index":0}
+  ]}
+"""
+
+
+# ── Decision Prompt ───────────────────────────────────────────────────────────
+
+DECISION_SYSTEM_PROMPT = """\
+You are the Decision layer of an agent.
+Inputs you receive: ONE current goal, the relevant memory snippets,
+recent history, and optionally the raw bytes of one attached artifact.
+
+Choose EXACTLY ONE response:
+  (a) Reply with the final answer to this goal as plain text. If the
+      goal asks you to summarise, extract, compare, or transform the
+      attached content, do that work inside your reply.
+  (b) Call exactly ONE tool from the available MCP tools when you need
+      external work (fetching, file ops, time, currency, web search).
 
 Rules:
-- Preserve goal order. Do not reorder, insert, or drop goals.
-- Once a goal is marked done, it stays done.
-- Only attach artifacts to the first unfinished goal.
-"""
-
-DECOMPOSE_QUERY_PROMPT = """
-Decompose the user's query into one or more bounded goals, each a short imperative statement.
-
-Rules for decomposition:
-- Each goal must map to exactly ONE tool call or ONE final synthesis/answer.
-- Never combine "search" and "read/fetch" into the same goal. Searching returns
-  snippets; reading/fetching retrieves the full page content. These are separate actions.
-- If the query says "read the top N results", emit N separate fetch goals
-  (e.g., "Fetch the full content of result 1 from the search").
-- Ordering matters: search goals before fetch goals, fetch goals before
-  summarise/compare/answer goals.
-- Keep goal text concise but unambiguous about what action is required.
-"""
-
-UPDATE_GOALS_PROMPT = """
-For each prior goal, examine the run history. Mark the goal `done: true`
-the moment the history contains an action or answer that **fully** satisfies it.
-Once done, the goal remains done in every subsequent iteration.
-
-Before marking a goal done, verify:
-- Every verb/action in the goal text has a matching completed action in the history.
-- "Search" is satisfied by a web_search action. "Read" or "Fetch" is satisfied
-  only by a fetch_url action for the relevant URL — a search snippet alone does NOT
-  satisfy a read/fetch goal.
-- If the goal mentions a quantity (e.g., "top 3 results"), the history must contain
-  that many matching actions.
-- If in doubt, leave the goal as not done.
-"""
-
-ATTACH_ARTIFACT_PROMPT = """
-For the first unfinished goal in the list, respond in JSON.
-Decide whether it needs raw bytes from a previously fetched artifact.
-If yes, set the goal's attach_artifact_id to one of the artifact handles in MEMORY HITS.
-"""
-
-CHECK_IF_ARTIFACT_NEEDED_PROMPT = """
-Examine the goal and the available memory hits. Respond in JSON.
-Determine if this goal requires raw bytes from a previously fetched artifact to proceed.
-
-Return true only if:
-- The goal explicitly references content that exists in an artifact
-- The artifact's descriptor indicates it contains data needed for this goal
-
-Return false if the goal can be accomplished without artifact data.
-"""
-
-
-# ── Decision Prompts ──────────────────────────────────────────────────────────
-
-DECISION_SYSTEM_PROMPT = """You are a decision module. Respond in JSON with exactly ONE of two outputs:
-1. A final ANSWER if you can satisfy the goal from the available context, OR
-2. A single TOOL CALL if external action is required.
-
-Rules:
-- If the goal contains a URL like "https://...", you MUST call fetch_url. Do NOT answer.
-- If the goal says "Fetch", "Get", "Download", or "Retrieve" a webpage or file, you MUST call the matching tool. Do NOT answer from memory.
-- Strings starting with "art:" are internal artifact handles, NOT file paths or URLs. Never pass them to tools like read_file or fetch_url. When artifact bytes are needed, they appear under ATTACHED ARTIFACTS.
-- When the goal asks for extraction, listing, comparison, or selection, your answer must be substantive: at least 3 sentences or a list of items. Do not return meta-answers like "the page has been fetched".
-- Pick exactly one tool. Do not narrate.
-
-Examples:
-Goal: "Fetch https://en.wikipedia.org/wiki/Claude_Shannon"
-Output: {"tool_call": {"name": "fetch_url", "arguments": {"url": "https://en.wikipedia.org/wiki/Claude_Shannon"}}}
-
-Goal: "Extract birth date from the fetched Wikipedia page" (with attached artifact)
-Output: {"answer": "Claude Shannon was born on April 30, 1916."}
+- Never narrate. Answer or call a tool, never both.
+- Never invent a tool that is not in the tool list.
+- If the goal is already satisfied by the memory hits + history, answer
+  directly without calling a tool.
+- Artifact handles (strings starting with `art:`) are NOT file paths,
+  URLs, or tool arguments. NEVER pass an `art:...` value to read_file,
+  list_dir, fetch_url, or ANY other tool. If a goal needs the bytes of
+  an artifact, those bytes will already appear in the ATTACHED
+  ARTIFACTS section of your input — answer directly from that text.
+  WRONG:  read_file({"path": "art:abc1234"})
+  WRONG:  fetch_url({"url": "art:abc1234"})
+  RIGHT:  read the bytes already in ATTACHED ARTIFACTS and answer.
+- read_file and list_dir operate on the local sandbox/ directory, not
+  artifacts. Only call them when the user has asked you to read/list a
+  real sandbox file by name.
+- Answer using whatever is in front of you: memory hits, history, and
+  any attached artifact bytes. Be substantive — at least 3 sentences
+  or a list of items when the goal is to extract/list/select/compare.
+- For 'remember X', 'save X', 'set a reminder', 'note X' style goals,
+  call create_file (or update_file when re-saving) under the sandbox
+  with a filename describing the topic. Do NOT reply that you cannot
+  set reminders — create_file IS how you set them.
+- When the goal asks to make a file's or fetched content's contents
+  SEARCHABLE for later turns or runs (phrasings like 'index', 'ingest',
+  'make searchable', 'add to the knowledge base', 'load into memory'),
+  call `index_document`. `read_file` only returns the bytes once and
+  then discards them; `index_document` chunks the content and writes
+  the chunks into Memory so they survive across turns and runs. Use
+  `read_file` only for one-shot inspection of a known sandbox file.
+- When the goal asks to ANSWER a question and the MEMORY HITS already
+  contain `fact` items whose descriptors begin with `[sandbox:` or
+  `[art:` (those are previously-indexed chunks of source documents),
+  call `search_knowledge` against the question rather than re-fetching
+  the URL or re-reading the file. The indexed chunks are why the
+  corpus was indexed in the first place; re-fetching is wasted work.
+  The chunk text for each indexed hit is shown inline under the hit's
+  descriptor (`chunk: ...`); synthesise directly from those previews
+  rather than re-issuing the same vector query.
 """

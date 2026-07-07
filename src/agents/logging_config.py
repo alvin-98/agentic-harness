@@ -182,12 +182,12 @@ class HumanReadableFormatter(logging.Formatter):
             prov = ra.get("provider", "")
             model = ra.get("model", "")
             raw = ra.get("raw_reply", ra.get("error", ra.get("reason", "")))
-            lines += f"                 ⚠ router {prov}/{model}: {st} — {raw[:200]}\n"
+            lines += f"                 ⚠ router {prov}/{model}: {st} — {raw}\n"
         attempted = extra.get("attempted", [])
         for att in attempted:
             prov = att.get("provider", "")
             reason = att.get("reason", "")
-            lines += f"                 ⚠ worker {prov}: {reason[:200]}\n"
+            lines += f"                 ⚠ worker {prov}: {reason}\n"
         return lines
 
     def _format_event(self, event: str, extra: dict, ts: str, level: str, run_id: str) -> str:
@@ -231,7 +231,7 @@ class HumanReadableFormatter(logging.Formatter):
 
         if event == "memory_created":
             kind = extra.get("kind", "")
-            desc = extra.get("descriptor", "")[:60]
+            desc = extra.get("descriptor", "")
             return f"[memory.write]   {kind}: {desc}\n"
 
         if event == "tool_outcome_recorded":
@@ -256,12 +256,12 @@ class HumanReadableFormatter(logging.Formatter):
             return f"[perception]     goals: {done}/{total} done, {remaining} remaining\n"
 
         if event == "goal_marked_done":
-            gid = extra.get("goal_id", "?")[:12]
+            gid = extra.get("goal_id", "?")
             text = extra.get("goal_text", "")
             return f"[perception]     ✓ g:{gid} done - {text}\n"
 
         if event == "artifact_attached_to_goal":
-            gid = extra.get("goal_id", "?")[:12]
+            gid = extra.get("goal_id", "?")
             art_id = extra.get("artifact_id", "")
             return f"[perception]     attached {art_id} → g:{gid}\n"
 
@@ -273,7 +273,7 @@ class HumanReadableFormatter(logging.Formatter):
             return ""  # Skip if not all done, other events cover it
 
         if event == "goal_selected":
-            gid = extra.get("goal_id", "?")[:12]
+            gid = extra.get("goal_id", "?")
             text = extra.get("goal_text", "")
             return f"[perception]     → selected g:{gid}: {text}\n"
 
@@ -294,7 +294,7 @@ class HumanReadableFormatter(logging.Formatter):
 
         # Decision events
         if event == "decision_llm_complete":
-            gid = extra.get("goal_id", "?")[:12]
+            gid = extra.get("goal_id", "?")
             is_answer = extra.get("is_answer", False)
             tool = extra.get("tool_name", "")
             duration = extra.get("duration_ms", 0)
@@ -320,14 +320,12 @@ class HumanReadableFormatter(logging.Formatter):
             tool = extra.get("tool", "")
             args = extra.get("arguments", {})
             args_str = json.dumps(args) if args else "{}"
-            if len(args_str) > 200:
-                args_str = args_str[:197] + "..."
             return f"[action]         → {tool}({args_str})\n"
 
         if event == "action_complete":
             tool = extra.get("tool", "")
             duration = extra.get("duration_ms", 0)
-            preview = extra.get("result_preview", "")[:300].replace("\n", " ")
+            preview = extra.get("result_preview", "").replace("\n", " ")
             art_id = extra.get("artifact_id")
             if art_id:
                 return f"[action]         ← {tool} ({duration}ms) artifact:{art_id}\n"
@@ -341,8 +339,8 @@ class HumanReadableFormatter(logging.Formatter):
 
         # Answer events
         if event == "answer_produced":
-            gid = extra.get("goal_id", "?")[:12]
-            preview = extra.get("answer_preview", "")[:150].replace("\n", " ")
+            gid = extra.get("goal_id", "?")
+            preview = extra.get("answer_preview", "").replace("\n", " ")
             return f"[answer]         g:{gid}: {preview}...\n"
 
         if event == "all_goals_done":

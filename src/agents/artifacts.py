@@ -34,16 +34,29 @@ class ArtifactStore:
             self._save_index({})
 
     def _load_index(self) -> dict[str, dict]:
-        """Load the artifact index."""
+        """Load the artifact index, tolerating an empty or corrupt file."""
         if not ARTIFACTS_INDEX.exists():
             return {}
-        with open(ARTIFACTS_INDEX, "r") as f:
-            return json.load(f)
+        try:
+            with open(ARTIFACTS_INDEX, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            # An interrupted write can leave an empty/corrupt index; recover
+            # gracefully instead of crashing every subsequent run.
+            return {}
 
     def _save_index(self, index: dict[str, dict]):
-        """Save the artifact index."""
-        with open(ARTIFACTS_INDEX, "w") as f:
+        """Save the artifact index atomically.
+
+        Write to a temp file in the same directory and os.replace() it over the
+        real index so an interrupted write never truncates index.json to 0 bytes.
+        """
+        tmp_path = ARTIFACTS_INDEX.with_suffix(".json.tmp")
+        with open(tmp_path, "w") as f:
             json.dump(index, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, ARTIFACTS_INDEX)
 
     def _artifact_path(self, artifact_id: str) -> Path:
         """Get the file path for an artifact."""

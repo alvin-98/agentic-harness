@@ -34,6 +34,12 @@ from .logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# The artifact descriptor is what lands in the run history (and is therefore
+# replayed into every subsequent Perception/Decision prompt). Keep its inline
+# preview short — the full bytes live in the artifact store and are surfaced
+# on demand via chunk retrieval, not by dumping the whole page into history.
+ARTIFACT_PREVIEW_CHARS = 500
+
 
 class Action:
     def __init__(self):
@@ -76,7 +82,7 @@ class Action:
                 content_type="text/plain",
                 descriptor=f"Result from {tool_call.name}",
             )
-            preview = text[:200].replace("\n", " ")
+            preview = text.replace("\n", " ")[:ARTIFACT_PREVIEW_CHARS]
             descriptor = f"[artifact {artifact_id}, {len(text_bytes)} bytes] preview: {preview}..."
             logger.info("artifact_created",
                        artifact_id=artifact_id,

@@ -30,6 +30,10 @@ logger = get_logger(__name__)
 MAX_ITERATIONS = 10
 DECISION_MAX_RETRIES = 2
 
+# When an artifact is too small to have a chunk sidecar, attach at most this many
+# raw bytes so a fallback attach can never reintroduce a context blow-up.
+ATTACH_FALLBACK_BYTES = 8000
+
 perception = perception_module.Perception()
 decision = decision_module.Decision()
 memory = memory_module.Memory()
@@ -63,7 +67,7 @@ def ensure_gateway() -> None:
 async def mcp_session():
     """Context manager that yields a live MCP ClientSession."""
     server_params = StdioServerParameters(
-        command="python",
+        command=sys.executable,
         args=[str(MCP_SERVER_PATH)],
     )
     
@@ -100,14 +104,14 @@ def final_answer_from(history: list[dict]) -> str:
     actions = [h for h in history if h.get("kind") == "action"]
     if actions:
         last = actions[-1]
-        return f"Completed {len(actions)} action(s). Last: {last.get('tool', 'unknown')} - {last.get('result_descriptor', '')[:200]}"
+        return f"Completed {len(actions)} action(s). Last: {last.get('tool', 'unknown')} - {last.get('result_descriptor', '')}"
     
     return "No results produced."
 
 
-async def run(query: str) -> str:
+async def run(query: str, run_id: str | None = None) -> str:
     ensure_gateway()
-    run_id = uuid.uuid4().hex
+    run_id = run_id or uuid.uuid4().hex
     history: list[dict] = []
     prior_goals: list[Goal] = []
 
@@ -125,6 +129,7 @@ async def run(query: str) -> str:
             logger.debug("tools_loaded", tool_count=len(tools), tool_names=[t.name for t in tools])
 
             for it in range(1, MAX_ITERATIONS + 1):
+                set_context(iteration=it)
                 logger.info("iteration_start", iteration=it)
                 iter_start = time.time()
 
@@ -147,11 +152,21 @@ async def run(query: str) -> str:
 
                 attached = []
                 if goal.attach_artifact_id and artifacts.exists(goal.attach_artifact_id):
-                    attached.append((
-                        goal.attach_artifact_id,
-                        artifacts.get_bytes(goal.attach_artifact_id),
-                    ))
-                    logger.debug("artifact_attached", artifact_id=goal.attach_artifact_id)
+                    aid = goal.attach_artifact_id
+                    # Retrieve only the chunks relevant to this goal instead of
+                    # attaching the whole artifact (which can be 100k+ tokens and
+                    # overflow the model context). Falls back to a bounded slice
+                    # when the artifact was too small to be chunk-indexed.
+                    chunks = memory.retrieve_artifact_chunks(aid, query=goal.text)
+                    if chunks is not None:
+                        attached.append((aid, chunks.encode("utf-8")))
+                        logger.info("artifact_chunks_attached",
+                                   artifact_id=aid, chars=len(chunks))
+                    else:
+                        raw = artifacts.get_bytes(aid)[:ATTACH_FALLBACK_BYTES]
+                        attached.append((aid, raw))
+                        logger.debug("artifact_attached_fallback",
+                                    artifact_id=aid, bytes=len(raw))
 
                 out = None
                 for attempt in range(1, DECISION_MAX_RETRIES + 1):
@@ -214,6 +229,13 @@ async def run(query: str) -> str:
                            artifact_id=art_id,
                            has_artifact=art_id is not None)
 
+                # Chunk + embed large artifacts into a per-artifact sidecar so
+                # later goals can retrieve only the relevant slices instead of
+                # attaching the whole blob.
+                if art_id and artifacts.exists(art_id):
+                    raw = artifacts.get_bytes(art_id).decode("utf-8", errors="replace")
+                    memory.index_artifact(art_id, raw)
+
                 memory.record_outcome(
                     tool_call=out.tool_call,
                     result_text=result_text,
@@ -245,14 +267,14 @@ async def run(query: str) -> str:
 
 def main() -> None:
     # query = "Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory."
-    query = """Find 3 family-friendly things to do in Tokyo this weekend.
-Check Saturday's weather forecast there and tell me which one
-is most appropriate."""
+#     query = """Find 3 family-friendly things to do in Tokyo this weekend.
+# Check Saturday's weather forecast there and tell me which one
+# is most appropriate."""
     # query = """My mom's birthday is 15 May 2026. Remember that and give me
     #    a calendar reminder for two weeks before and on the day."""
     # query = "When is mom's birthday?"
-#     query = """Search for 'Python asyncio best practices', read the top 3 results,
-# and give me a short numbered list of the advice they agree on."""
+    query = """Search for 'Python asyncio best practices', read the top 3 results,
+and give me a short numbered list of the advice they agree on."""
     result = asyncio.run(run(query))
     print(result)
 

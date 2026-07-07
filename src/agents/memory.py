@@ -22,6 +22,7 @@ read call. The MCP subprocess writes chunks via index_document which updates
 the on-disk files. The agent process sees those writes on its next read.
 """
 
+import re
 import sys
 import uuid
 import json
@@ -33,7 +34,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "llm_gateway"))
 
 from .schemas import MemoryItem, Kind
-from client import LLM
+from .instrumented_llm import InstrumentedLLM
 from .logging_config import get_logger
 from . import config
 
@@ -45,9 +46,44 @@ MEMORY_JSON = STATE_DIR / "memory.json"
 FAISS_INDEX_PATH = STATE_DIR / "index.faiss"
 FAISS_IDS_PATH = STATE_DIR / "index_ids.json"
 
+# Per-artifact chunk sidecars live here, one JSON file per artifact:
+#   [{"index": int, "text": str, "embedding": [float, ...]}, ...]
+# These are kept OUT of memory.json/FAISS so they never surface in the general
+# memory.read() pool — they are only queried on demand for a specific artifact.
+ARTIFACT_CHUNKS_DIR = STATE_DIR / "artifact_chunks"
+
+# Chunking / retrieval defaults for artifact content.
+ARTIFACT_CHUNK_WORDS = 300      # words per chunk
+ARTIFACT_CHUNK_OVERLAP = 60     # overlapping words between adjacent chunks
+ARTIFACT_RETRIEVE_TOP_K = 6     # relevant chunks returned per goal
+
+# Upper bounds on how much raw tool text flows into LLM calls / memory storage.
+SUMMARIZE_SNIPPET_CHARS = 4000  # head of a result fed to the descriptor summarizer
+OUTCOME_PREVIEW_CHARS = 2000    # preview stored in a tool_outcome memory value
+
 EXTRACTION_SYSTEM_PROMPT = config.MEMORY_EXTRACTION_SYSTEM_PROMPT
 
 EMBED_DIM = 768  # nomic-embed-text-v1.5 output dimension
+
+# ── Keyword fallback helpers ─────────────────────────────────────────────────
+# Stopwords and tokenization for the keyword-overlap fallback path. The vector
+# path is primary; this only runs when FAISS is empty or the gateway is
+# unreachable. Folding recent history into the query tokens lets the fallback
+# match on what the agent just did, not just the original user query.
+
+_STOPWORDS = {
+    "the", "is", "a", "an", "of", "to", "and", "or", "in", "on", "for", "at",
+    "with", "by", "from", "what", "how", "when", "where", "why", "this", "that",
+    "it", "be", "as", "are", "was", "were", "i", "you", "me", "my", "your",
+}
+
+
+def _tokens(text: str) -> set[str]:
+    """Tokenize text: lowercase word tokens, stopwords removed, len > 2."""
+    return {
+        w for w in re.findall(r"\w+", text.lower())
+        if w not in _STOPWORDS and len(w) > 2
+    }
 
 
 def _new_id(prefix: str = "mem") -> str:
@@ -59,7 +95,7 @@ class Memory:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         self._ensure_json_exists()
         self._cleanup_expired()
-        self.llm = LLM()
+        self.llm = InstrumentedLLM()
 
     # ── JSON persistence ─────────────────────────────────────────────────────
 
@@ -196,7 +232,7 @@ class Memory:
                 return emb
             return None
         except Exception as e:
-            logger.warning("embed_failed", error=str(e)[:200], task_type=task_type)
+            logger.warning("embed_failed", error=str(e), task_type=task_type)
             return None
 
     # ── Core persist helper ──────────────────────────────────────────────────
@@ -240,13 +276,27 @@ class Memory:
 
     # ── Keyword overlap fallback ─────────────────────────────────────────────
 
-    def _keyword_search(self, query: str, items: list[dict], top_k: int) -> list[MemoryItem]:
-        """Score items by keyword overlap with query tokens. Fallback retrieval."""
-        query_tokens = set(query.lower().split())
+    def _keyword_search(
+        self,
+        query: str,
+        items: list[dict],
+        top_k: int,
+        history: list[dict] | None = None,
+    ) -> list[MemoryItem]:
+        """Score items by keyword overlap with query tokens. Fallback retrieval.
+
+        Uses stopword-aware tokenization and folds the last 3 history events
+        into the query tokens so the fallback can match on recent tool calls
+        and answers, not just the original user query."""
+        query_tokens = _tokens(query)
+        if history:
+            for h in history[-3:]:
+                query_tokens |= _tokens(json.dumps(h, default=str))
+
         scored = []
         for d in items:
-            keywords = set(k.lower() for k in d.get("keywords", []))
-            desc_tokens = set(d.get("descriptor", "").lower().split())
+            keywords = {w.lower() for w in d.get("keywords", [])}
+            desc_tokens = _tokens(d.get("descriptor", ""))
             overlap = len(query_tokens & (keywords | desc_tokens))
             if overlap > 0:
                 scored.append((overlap, d))
@@ -308,6 +358,7 @@ class Memory:
             messages = [{"role": "user", "content": f"Extract memory attributes from this user input:\n\n{query}"}]
             _c = config.MEMORY_EXTRACTION_LLM
             reply = self.llm.chat(
+                call_label="memory.extract_attributes",
                 messages=messages,
                 system=EXTRACTION_SYSTEM_PROMPT,
                 cache_system=_c.cache_system,
@@ -365,7 +416,7 @@ class Memory:
                    kind=kind.value if isinstance(kind, Kind) else kind,
                    source=source,
                    has_embedding=embedding is not None,
-                   descriptor=descriptor[:100] if descriptor else None)
+                   descriptor=descriptor if descriptor else None)
         return memory_id
 
     def add_fact(
@@ -443,13 +494,13 @@ class Memory:
 
                 if results:
                     logger.debug("memory_vector_search",
-                                query=query[:100],
+                                query=query,
                                 hits=len(results))
                     return results
 
         # Fallback: keyword overlap
-        logger.debug("memory_keyword_fallback", query=query[:100])
-        return self._keyword_search(query, items, top_k)
+        logger.debug("memory_keyword_fallback", query=query)
+        return self._keyword_search(query, items, top_k, history=history)
 
     def read(self, query: str, history: list[dict] = None, top_k: int = 10) -> list[MemoryItem]:
         """
@@ -637,9 +688,137 @@ class Memory:
                    query=search_query,
                    goal_id=goal_id)
 
+    # ── Artifact chunk index (per-artifact sidecar) ──────────────────────────
+
+    @staticmethod
+    def _chunk_artifact_id(artifact_id: str) -> str:
+        """Filesystem-safe form of an artifact handle (mirrors ArtifactStore)."""
+        return artifact_id.replace(":", "_").replace("/", "_")
+
+    def _chunk_sidecar_path(self, artifact_id: str) -> Path:
+        return ARTIFACT_CHUNKS_DIR / f"{self._chunk_artifact_id(artifact_id)}.json"
+
+    @staticmethod
+    def _extract_artifact_text(raw: str) -> str:
+        """Pull the human-readable body out of a stored artifact.
+
+        fetch_url artifacts are JSON dicts with a "text" field; read_file uses
+        "content". Anything else is treated as plain text.
+        """
+        raw = raw.strip()
+        if raw.startswith("{"):
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    for key in ("text", "content", "markdown"):
+                        if isinstance(obj.get(key), str) and obj[key].strip():
+                            return obj[key]
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return raw
+
+    @staticmethod
+    def _chunk_words(
+        text: str,
+        chunk_size: int = ARTIFACT_CHUNK_WORDS,
+        overlap: int = ARTIFACT_CHUNK_OVERLAP,
+    ) -> list[str]:
+        """Split text into overlapping word-level chunks."""
+        words = text.split()
+        if not words:
+            return []
+        chunks = []
+        start = 0
+        step = max(1, chunk_size - overlap)
+        while start < len(words):
+            chunks.append(" ".join(words[start:start + chunk_size]))
+            start += step
+        return chunks
+
+    def index_artifact(self, artifact_id: str, raw_content: str) -> int:
+        """Chunk an artifact's content, embed each chunk, and persist to a
+        per-artifact sidecar for later on-demand retrieval.
+
+        Chunks live outside memory.json/FAISS so they never pollute the general
+        memory.read() pool. Returns the number of chunks indexed (0 if the body
+        is small enough to attach whole, or if embedding is unavailable).
+        """
+        text = self._extract_artifact_text(raw_content)
+        chunks = self._chunk_words(text)
+        # Small bodies aren't worth chunking — the caller can attach them whole.
+        if len(chunks) <= 1:
+            return 0
+
+        records = []
+        for i, chunk in enumerate(chunks):
+            emb = self._try_embed(chunk, task_type="retrieval_document")
+            if emb is None:
+                # Without embeddings we can't rank chunks; abort and let the
+                # caller fall back to a bounded slice of the full artifact.
+                logger.warning("artifact_index_embed_failed", artifact_id=artifact_id, chunk=i)
+                return 0
+            records.append({"index": i, "text": chunk, "embedding": emb})
+
+        ARTIFACT_CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
+        path = self._chunk_sidecar_path(artifact_id)
+        path.write_text(json.dumps(records), encoding="utf-8")
+
+        logger.info("artifact_indexed",
+                   artifact_id=artifact_id,
+                   chunks=len(records),
+                   chars=len(text))
+        return len(records)
+
+    def retrieve_artifact_chunks(
+        self,
+        artifact_id: str,
+        query: str,
+        top_k: int = ARTIFACT_RETRIEVE_TOP_K,
+    ) -> str | None:
+        """Return the top-k chunks of an artifact most relevant to `query`,
+        joined in original document order. Returns None when no sidecar exists
+        (caller should fall back to attaching a bounded slice of the artifact).
+        """
+        path = self._chunk_sidecar_path(artifact_id)
+        if not path.exists():
+            return None
+        try:
+            records = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        if not records:
+            return None
+
+        q_emb = self._try_embed(query, task_type="retrieval_query")
+        if q_emb is None:
+            # No query embedding — return the leading chunks in order.
+            selected = sorted(records, key=lambda r: r["index"])[:top_k]
+        else:
+            q = np.array(q_emb, dtype=np.float32)
+            q /= (np.linalg.norm(q) + 1e-8)
+            scored = []
+            for r in records:
+                v = np.array(r["embedding"], dtype=np.float32)
+                v /= (np.linalg.norm(v) + 1e-8)
+                scored.append((float(np.dot(q, v)), r))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            selected = [r for _, r in scored[:top_k]]
+            # Re-order the winning chunks by their position in the document so
+            # the attached text reads coherently.
+            selected.sort(key=lambda r: r["index"])
+
+        logger.info("artifact_chunks_retrieved",
+                   artifact_id=artifact_id,
+                   returned=len(selected),
+                   total=len(records))
+        return "\n\n[...]\n\n".join(r["text"] for r in selected)
+
     def _summarize_outcome(self, tool_name: str, arguments: dict, result_text: str) -> str:
         """Generate a one-line semantic descriptor for a tool outcome via LLM."""
-        snippet = result_text[:1500]
+        # Cap the snippet: the summarizer only needs the head of a large result to
+        # write a one-line descriptor. Sending the full artifact (100k+ tokens)
+        # here is what previously blew past the model's context window.
+        snippet = result_text[:SUMMARIZE_SNIPPET_CHARS]
         prompt = (
             f"Tool: {tool_name}\nArguments: {arguments}\n"
             f"Result snippet:\n{snippet}\n\n"
@@ -648,6 +827,7 @@ class Memory:
         _c = config.MEMORY_SUMMARIZE_LLM
         try:
             reply = self.llm.chat(
+                call_label="memory.summarize_outcome",
                 prompt=prompt,
                 system=config.MEMORY_SUMMARIZE_SYSTEM_PROMPT,
                 cache_system=_c.cache_system,
@@ -662,7 +842,7 @@ class Memory:
             if summary:
                 return summary
         except Exception as e:
-            logger.warning("summarize_outcome_failed", error=str(e)[:200])
+            logger.warning("summarize_outcome_failed", error=str(e))
         # Fallback: use tool name + arguments
         return f"Tool '{tool_name}' called with {arguments}"
 
@@ -699,7 +879,13 @@ class Memory:
             value={
                 "tool_name": tool_call.name,
                 "arguments": tool_call.arguments,
-                "result": result_text,
+                # Store only a bounded preview — the full bytes live in the
+                # artifact store (recoverable via artifact_id) and, for large
+                # content, in the per-artifact chunk sidecar. Persisting the
+                # whole result here bloated memory.json and leaked back into
+                # prompts on subsequent reads.
+                "result_preview": result_text[:OUTCOME_PREVIEW_CHARS],
+                "artifact_id": artifact_id,
             },
             artifact_id=artifact_id,
             embedding=embedding,

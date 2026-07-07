@@ -26,6 +26,28 @@ class MemoryItem(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     expiry_date: datetime | None = None  # None means never expires
 
+    def to_prompt(self) -> dict:
+        """Return a prompt-safe projection of this memory item.
+
+        Excludes the `embedding` field (a 768-dim float vector used only by the
+        FAISS index) so that stringifying memory hits into LLM prompts does not
+        pollute the context with thousands of meaningless floats. The embedding
+        remains on the model for index rebuild/append paths.
+        """
+        return {
+            "id": self.id,
+            "kind": self.kind.value if isinstance(self.kind, Kind) else self.kind,
+            "keywords": self.keywords,
+            "descriptor": self.descriptor,
+            "value": self.value,
+            "artifact_id": self.artifact_id,
+            "source": self.source,
+            "run_id": self.run_id,
+            "goal_id": self.goal_id,
+            "confidence": self.confidence,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
 
 class Artifact(BaseModel):
     id: str                    # "art:<sha256-prefix>"
