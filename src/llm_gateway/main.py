@@ -817,11 +817,15 @@ async def set_strategy(body: dict):
 
 @app.post("/v1/config/reload")
 async def reload_config():
-    """V4: hot-reload models.yaml from disk."""
+    """V4: hot-reload models.yaml from disk.
+
+    Force=True so an explicit user click always re-reads the file,
+    bypassing the mtime check (which the background flusher can stale).
+    """
     cfg = app.state.gateway_config
     if not cfg:
         raise HTTPException(400, "models.yaml not loaded")
-    new_cfg = C.reload_if_changed(cfg)
+    new_cfg = C.reload_if_changed(cfg, force=True)
     app.state.gateway_config = new_cfg
     app.state.router.config = new_cfg
     # Update order if changed

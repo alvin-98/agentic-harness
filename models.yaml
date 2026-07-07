@@ -70,7 +70,7 @@ providers:
       max_ctx: 256000
       structured: false
       type: text
-      visible: false
+      visible: true
       rpm_remaining: null
       rpd_remaining: null
       exhausted: false
@@ -114,7 +114,7 @@ providers:
       max_ctx: 262144
       structured: true
       type: text
-      visible: false
+      visible: true
       rpm_remaining: null
       rpd_remaining: null
       exhausted: false
@@ -180,7 +180,7 @@ providers:
       max_ctx: 256000
       structured: false
       type: text
-      visible: false
+      visible: true
       rpm_remaining: null
       rpd_remaining: null
       exhausted: false

@@ -222,13 +222,15 @@ def save_state(cfg: GatewayConfig, path: Optional[Path] = None):
         new_raw_models = []
         for slot in pcfg.models:
             if slot.id in raw_by_id:
-                # Update existing entry in place
+                # Update only live runtime state on existing entries.
+                # User-authored fields (type, visible, limits, max_ctx, ...)
+                # are owned by the YAML file — never overwrite them from the
+                # in-memory config, otherwise the background flusher would
+                # silently revert manual edits to models.yaml.
                 entry = raw_by_id[slot.id]
                 entry["rpm_remaining"] = slot.rpm_remaining
                 entry["rpd_remaining"] = slot.rpd_remaining
                 entry["exhausted"] = slot.exhausted
-                entry["type"] = slot.type
-                entry["visible"] = slot.visible
                 new_raw_models.append(entry)
             else:
                 # Append newly discovered model
@@ -253,21 +255,40 @@ def has_changed(cfg: GatewayConfig) -> bool:
     return path.stat().st_mtime > cfg._mtime
 
 
-def reload_if_changed(cfg: GatewayConfig) -> GatewayConfig:
+def reload_if_changed(cfg: GatewayConfig, force: bool = False) -> GatewayConfig:
     """Hot-reload: re-read models.yaml if it changed on disk.
 
-    Preserves transient runtime state (like last_header_update) where possible.
+    Preserves transient runtime state (like last_header_update) and any
+    unflushed live rate-limit state (rpm_remaining, rpd_remaining,
+    exhausted) for matching slots.
+
+    Pass force=True to bypass the mtime check — used by the explicit
+    /v1/config/reload endpoint so a user click always re-reads the file,
+    even if the background flusher recently bumped _mtime.
     """
-    if not has_changed(cfg):
+    if not force and not has_changed(cfg):
         return cfg
     new_cfg = load_config(cfg._path or CONFIG_PATH)
-    # Preserve transient state from old config
+    # Preserve transient + unflushed live state from old config
     for pname, old_pcfg in cfg.providers.items():
-        if pname in new_cfg.providers:
-            new_pcfg = new_cfg.providers[pname]
-            for i, old_slot in enumerate(old_pcfg.models):
-                if i < len(new_pcfg.models) and new_pcfg.models[i].id == old_slot.id:
-                    new_pcfg.models[i].last_header_update = old_slot.last_header_update
+        if pname not in new_cfg.providers:
+            continue
+        new_pcfg = new_cfg.providers[pname]
+        # Index new slots by id for O(1) lookup (order may differ)
+        new_by_id = {s.id: s for s in new_pcfg.models}
+        for old_slot in old_pcfg.models:
+            new_slot = new_by_id.get(old_slot.id)
+            if new_slot is None:
+                continue
+            new_slot.last_header_update = old_slot.last_header_update
+            # Only carry forward live state the new config didn't specify,
+            # so an explicit edit in the YAML still wins.
+            if new_slot.rpm_remaining is None:
+                new_slot.rpm_remaining = old_slot.rpm_remaining
+            if new_slot.rpd_remaining is None:
+                new_slot.rpd_remaining = old_slot.rpd_remaining
+            if not new_slot.exhausted:
+                new_slot.exhausted = old_slot.exhausted
     return new_cfg
 
 
