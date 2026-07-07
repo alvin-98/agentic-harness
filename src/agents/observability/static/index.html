@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Run Viewer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>Agent Run Viewer</h1>
+        <div class="sub">Perception → Decision → Action, with full LLM I/O</div>
+      </div>
+      <div class="launch">
+        <textarea id="query" placeholder="Enter a query to launch a new run…"></textarea>
+        <button id="launch-btn">Launch run</button>
+      </div>
+      <div class="runs" id="runs"></div>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="empty">Select a run from the left, or launch a new one.</div>
+    </main>
+  </div>
+
+  <div class="drawer-overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer">
+    <div class="drawer-head">
+      <h3 id="drawer-title">LLM call</h3>
+      <button class="x" id="drawer-close">&times;</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
