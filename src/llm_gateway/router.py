@@ -19,7 +19,7 @@ LIMITS = {
     "ollama":     {"rpm": 9999, "rpd": 9999999, "tpm": 99999999, "cooldown": 0,   "max_ctx": 32000},
     "sglang":     {"rpm": 9999, "rpd": 9999999, "tpm": 99999999, "cooldown": 0,   "max_ctx": 32000},
     "cerebras":   {"rpm": 5,   "rpd": 2400,    "tpm": 30000,    "cooldown": 2,   "max_ctx": 8000,    "tokens_per_day": 1_000_000},
-    "groq":       {"rpm": 30,   "rpd": 1000,    "tpm": 6000,     "cooldown": 2,   "max_ctx": 100000},
+    "groq":       {"rpm": 30,   "rpd": 1000,    "tpm": 30000,    "cooldown": 2,   "max_ctx": 100000},
     "nvidia":     {"rpm": 40,   "rpd": 9999,    "tpm": 100000,   "cooldown": 2,   "max_ctx": 100000},
     "gemini":     {"rpm": 15,   "rpd": 1000,    "tpm": 250000,   "cooldown": 4,   "max_ctx": 1000000},
     "openrouter": {"rpm": 20,   "rpd": 50,      "tpm": 99999999, "cooldown": 3,   "max_ctx": 100000},

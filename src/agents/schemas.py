@@ -49,6 +49,32 @@ class MemoryItem(BaseModel):
         }
 
 
+class MemoryExtraction(BaseModel):
+    """LLM output schema for memory attribute extraction.
+
+    This is the minimal contract the LLM must satisfy — only the 6 fields the
+    extraction code actually reads. The other 8 fields on ``MemoryItem``
+    (``id``, ``artifact_id``, ``embedding``, ``source``, ``run_id``,
+    ``goal_id``, ``created_at``, ``expiry_date``) are system-prefilled by
+    ``remember()`` after extraction and must NOT appear in the LLM schema.
+
+    Using ``MemoryItem.model_json_schema()`` directly was problematic:
+    - The 768-dim ``embedding`` float array appeared in the schema, inviting
+      the model to hallucinate it or, under strict mode, forcing it to emit
+      768 floats.
+    - System-managed fields (``id``, ``run_id``, ``created_at``) were exposed,
+      letting the model drift values that are then overwritten anyway.
+    - Under ``_groq_strict_schema``, all 14 fields became ``required``,
+      forcing the model to produce every one including the embedding vector.
+    """
+    should_store: bool = True
+    kind: Kind
+    keywords: list[str]
+    descriptor: str
+    value: dict
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
 class Artifact(BaseModel):
     id: str                    # "art:<sha256-prefix>"
     content_type: str

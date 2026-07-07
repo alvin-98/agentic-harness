@@ -467,7 +467,7 @@ def merge_discovered_models(cfg: GatewayConfig, discovered: list[dict],
     # Default limits by provider
     default_limits = {
         "openrouter": {"rpm_limit": 20, "rpd_limit": 50, "tpm_limit": 99999999, "cooldown": 3},
-        "groq": {"rpm_limit": 30, "rpd_limit": 1000, "tpm_limit": 6000, "cooldown": 2},
+        "groq": {"rpm_limit": 30, "rpd_limit": 1000, "tpm_limit": 30000, "cooldown": 2},
         "nvidia": {"rpm_limit": 40, "rpd_limit": 9999, "tpm_limit": 100000, "cooldown": 2},
         "gemini": {"rpm_limit": 15, "rpd_limit": 1000, "tpm_limit": 250000, "cooldown": 4},
     }

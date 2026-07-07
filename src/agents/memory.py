@@ -33,7 +33,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "llm_gateway"))
 
-from .schemas import MemoryItem, Kind
+from .schemas import MemoryItem, MemoryExtraction, Kind
 from .instrumented_llm import InstrumentedLLM
 from .logging_config import get_logger
 from . import config
@@ -370,8 +370,8 @@ class Memory:
                 auto_route=_c.auto_route,
                 response_format={
                     "type": "json_schema",
-                    "schema": MemoryItem.model_json_schema(),
-                    "name": "MemoryItem",
+                    "schema": MemoryExtraction.model_json_schema(),
+                    "name": "MemoryExtraction",
                     "strict": True,
                 },
             )

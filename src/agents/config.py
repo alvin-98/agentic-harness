@@ -44,11 +44,18 @@ MEMORY_SUMMARIZE_LLM   = LLMConfig(auto_route="memory", reasoning="off", max_tok
 # attachment, and goal extension. temperature=1.0 matches the S7 design —
 # the deterministic post-processing (defensive merge, dedup, SYNTHESIS_KW
 # guard) compensates for the higher sampling temperature.
-PERCEPTION_LLM = LLMConfig(auto_route="perception", temperature=1.0)
+# reasoning="low" + max_tokens=4096: reasoning models (gpt-oss-120b, nemotron)
+# spend reasoning tokens against the max_tokens budget. With the old default
+# of 1024 + reasoning="medium", the reasoning trace exhausted the budget
+# before the model produced JSON output, causing ~89% of all structured-output
+# failures (empty output → "Expecting value: line 1 column 1 (char 0)").
+PERCEPTION_LLM = LLMConfig(auto_route="perception", temperature=1.0,
+                           reasoning="low", max_tokens=4096)
 # PERCEPTION_LLM = LLMConfig(provider="sglang")
 
-# Decision: the heaviest call — main action selection
-DECISION_LLM = LLMConfig(auto_route="decision")
+# Decision: the heaviest call — main action selection. Same reasoning as
+# perception: needs headroom for reasoning tokens + the actual JSON/text output.
+DECISION_LLM = LLMConfig(auto_route="decision", reasoning="low", max_tokens=4096)
 # DECISION_LLM = LLMConfig(provider="sglang")
 
 # ── Memory Prompts ────────────────────────────────────────────────────────────

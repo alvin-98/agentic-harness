@@ -366,18 +366,58 @@ _GROQ_BESTEFFORT_MODELS = _GROQ_STRICT_MODELS | {
 }
 
 
+# JSON-Schema keywords that Groq/Cerebras strict mode rejects. These must be
+# stripped before sending the schema; leaving them in causes the provider to
+# reject the request or produce malformed constrained output.
+_STRICT_DROP_KEYS = {"default", "maxLength", "maxItems", "title", "format", "examples", "$schema", "$defs", "definitions"}
+
+
 def _groq_strict_schema(schema: dict) -> dict:
-    """Prepare a JSON schema for Groq strict mode: all fields required,
-    additionalProperties false, recursively through nested objects."""
+    """Prepare a JSON schema for Groq/Cerebras strict mode.
+
+    Three transformations:
+    1. Inline all ``$ref`` / ``$defs`` references (strict mode requires a
+       single self-contained schema with no refs). Reuses the Gemini inliner.
+    2. Strip keywords strict mode rejects (``default``, ``maxLength``,
+       ``maxItems``, ``title``, ``format``, …).
+    3. Make every object fully strict: all properties required,
+       ``additionalProperties: false``, recursively.
+    """
+    s = _gemini_inline_refs(schema)
+    s = _strip_strict_keys(s)
+    return _make_strict(s)
+
+
+def _strip_strict_keys(node):
+    """Recursively remove JSON-Schema keywords that strict mode rejects."""
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if k in _STRICT_DROP_KEYS:
+                continue
+            out[k] = _strip_strict_keys(v)
+        return out
+    if isinstance(node, list):
+        return [_strip_strict_keys(x) for x in node]
+    return node
+
+
+def _make_strict(schema: dict) -> dict:
+    """Recursively enforce strict constraints: all fields required,
+    additionalProperties false, through nested objects and arrays."""
     s = dict(schema)
     if s.get("type") == "object" and "properties" in s:
         s["required"] = list(s["properties"].keys())
         s["additionalProperties"] = False
         s["properties"] = {
-            k: _groq_strict_schema(v) for k, v in s["properties"].items()
+            k: _make_strict(v) for k, v in s["properties"].items()
         }
     if s.get("type") == "array" and "items" in s:
-        s["items"] = _groq_strict_schema(s["items"])
+        s["items"] = _make_strict(s["items"])
+    # anyOf/allOf/oneOf: recurse into each branch
+    for combiner in ("anyOf", "allOf", "oneOf"):
+        if combiner in s and isinstance(s[combiner], list):
+            s[combiner] = [_make_strict(b) if isinstance(b, dict) else b for b in s[combiner]]
     return s
 
 
