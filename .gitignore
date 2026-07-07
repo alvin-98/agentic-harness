@@ -3,7 +3,8 @@
 __pycache__
 archive
 *.egg-info/
-notebooks/*.ipynb
+src/mech_interp
+notebooks
 *.json
 src/agents/state/
 src/artifacts/

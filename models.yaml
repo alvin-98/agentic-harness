@@ -52,34 +52,12 @@ providers:
       rpm_remaining: null
       rpd_remaining: null
       exhausted: false
-    - id: nex-agi/nex-n2-pro:free
-      rpm_limit: 20
-      rpd_limit: 50
-      cooldown: 3
-      max_ctx: 262144
-      structured: true
-      type: text
-      visible: false
-      rpm_remaining: null
-      rpd_remaining: null
-      exhausted: false
     - id: nvidia/nemotron-3.5-content-safety:free
       rpm_limit: 20
       rpd_limit: 50
       cooldown: 3
       max_ctx: 128000
       structured: false
-      type: text
-      visible: false
-      rpm_remaining: null
-      rpd_remaining: null
-      exhausted: false
-    - id: openrouter/owl-alpha
-      rpm_limit: 20
-      rpd_limit: 50
-      cooldown: 3
-      max_ctx: 1048756
-      structured: true
       type: text
       visible: false
       rpm_remaining: null
@@ -310,6 +288,39 @@ providers:
       rpd_limit: 50
       cooldown: 3
       max_ctx: 131072
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: cohere/north-mini-code:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 256000
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: poolside/laguna-xs-2.1:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262144
+      structured: false
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: tencent/hy3:free
+      rpm_limit: 20
+      rpd_limit: 50
+      cooldown: 3
+      max_ctx: 262144
       structured: false
       type: text
       visible: false
@@ -1529,7 +1540,7 @@ providers:
       rpm_remaining: null
       rpd_remaining: null
       exhausted: false
-    - id: z-ai/glm-5.1
+    - id: zyphra/zamba2-7b-instruct
       rpm_limit: 40
       rpd_limit: 9999
       tpm_limit: 100000
@@ -1539,7 +1550,7 @@ providers:
       rpm_remaining: null
       rpd_remaining: null
       exhausted: false
-    - id: zyphra/zamba2-7b-instruct
+    - id: z-ai/glm-5.2
       rpm_limit: 40
       rpd_limit: 9999
       tpm_limit: 100000
@@ -1726,6 +1737,17 @@ providers:
       tpm_limit: 6000
       cooldown: 2
       max_ctx: 448
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: qwen/qwen3.6-27b
+      rpm_limit: 30
+      rpd_limit: 1000
+      tpm_limit: 6000
+      cooldown: 2
+      max_ctx: 131072
       type: text
       visible: false
       rpm_remaining: null
@@ -2168,6 +2190,30 @@ providers:
       rpd_remaining: null
       exhausted: false
     - id: deep-research-pro-preview-12-2025
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 131072
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-3.1-flash-lite-image
+      rpm_limit: 15
+      rpd_limit: 1000
+      tpm_limit: 250000
+      cooldown: 4
+      max_ctx: 65536
+      structured: true
+      type: text
+      visible: false
+      rpm_remaining: null
+      rpd_remaining: null
+      exhausted: false
+    - id: gemini-omni-flash-preview
       rpm_limit: 15
       rpd_limit: 1000
       tpm_limit: 250000
