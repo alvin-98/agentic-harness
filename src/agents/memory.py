@@ -447,6 +447,96 @@ class Memory:
         )
         return self._persist_item(item)
 
+    def _summarize_chunk(self, chunk: str, source: str) -> str:
+        """Generate a one-line semantic descriptor for a document chunk via LLM.
+
+        This is the primary denoising step for the knowledge base: raw chunk
+        text (e.g. arxiv page dumps) is often dominated by navigation chrome,
+        so embedding the raw text indexes noise. The LLM summary distills the
+        substantive content into a single sentence that is both embedded and
+        shown to the agent. Falls back to a prefix-snippet descriptor on
+        failure, matching the legacy add_fact behavior.
+        """
+        snippet = chunk[:SUMMARIZE_SNIPPET_CHARS]
+        prompt = (
+            f"Source: {source}\n"
+            f"Document chunk:\n{snippet}\n\n"
+            f"{config.MEMORY_DOC_SUMMARIZE_USER_PROMPT}"
+        )
+        _c = config.MEMORY_SUMMARIZE_LLM
+        try:
+            reply = self.llm.chat(
+                call_label="memory.summarize_chunk",
+                prompt=prompt,
+                system=config.MEMORY_DOC_SUMMARIZE_SYSTEM_PROMPT,
+                cache_system=_c.cache_system,
+                reasoning=_c.reasoning,
+                provider=_c.provider,
+                model=_c.model,
+                temperature=_c.temperature,
+                max_tokens=_c.max_tokens,
+                auto_route=_c.auto_route,
+            )
+            summary = reply["text"].strip()
+            if summary:
+                return summary
+        except Exception as e:
+            logger.warning("summarize_chunk_failed", error=str(e), source=source)
+        # Fallback: legacy prefix-snippet descriptor so ingestion still succeeds.
+        preview = chunk[:120].replace("\n", " ")
+        return f"[{source}] {preview}"
+
+    def add_document_chunk(
+        self,
+        chunk: str,
+        *,
+        source: str,
+        path_stem: str,
+        chunk_index: int,
+        total_chunks: int,
+    ) -> MemoryItem:
+        """Write a document chunk as a DOCUMENT memory item with a semantic
+        descriptor. Used by index_document. The raw chunk text is preserved in
+        value.chunk; the descriptor (and thus the embedding) is an LLM-generated
+        one-line summary, not a raw prefix, so retrieval and the agent's view
+        see signal rather than navigation chrome.
+        """
+        descriptor = self._summarize_chunk(chunk, source)
+        embedding = self._try_embed(descriptor, task_type="retrieval_document")
+        item = MemoryItem(
+            id=_new_id("mem"),
+            kind=Kind.DOCUMENT,
+            keywords=[path_stem.lower(), f"chunk_{chunk_index}"],
+            descriptor=descriptor,
+            value={
+                "chunk": chunk,
+                "chunk_index": chunk_index,
+                "total_chunks": total_chunks,
+                "source": source,
+            },
+            embedding=embedding,
+            source=source,
+            run_id="mcp",
+            confidence=1.0,
+            created_at=datetime.now(),
+            expiry_date=None,
+        )
+        return self._persist_item(item)
+
+    def delete_by_source(self, source: str) -> int:
+        """Remove all DOCUMENT items whose source matches, then rebuild FAISS.
+        Used by index_document to dedupe before re-ingesting a file (prevents
+        the append-on-reindex duplication bug). Returns the count removed.
+        """
+        items = self._load_items()
+        kept = [d for d in items if not (d.get("kind") == Kind.DOCUMENT.value and d.get("source") == source)]
+        removed = len(items) - len(kept)
+        if removed:
+            self._save_items(kept)
+            self._rebuild_faiss_from_items(kept)
+            logger.info("document_chunks_deleted", source=source, count=removed)
+        return removed
+
     def recollect(self, query: str, history: list[dict] = None, kinds: list[Kind] = None, top_k: int = 10) -> list[MemoryItem]:
         """
         Read memories that are relevant to the query and history.
@@ -466,6 +556,12 @@ class Memory:
         if kinds:
             kind_values = {k.value if isinstance(k, Kind) else k for k in kinds}
             items = [d for d in items if d.get("kind") in kind_values]
+        else:
+            # Default "all agent memory" path: exclude DOCUMENT chunks so raw
+            # indexed file content does not pollute the agent's general
+            # memory.read() pool (fed to Perception). Documents are queried
+            # explicitly via search_knowledge, which passes kinds=[DOCUMENT].
+            items = [d for d in items if d.get("kind") != Kind.DOCUMENT.value]
 
         # Vector path: embed query, search FAISS
         query_embedding = self._try_embed(query, task_type="retrieval_query")
@@ -502,11 +598,15 @@ class Memory:
         logger.debug("memory_keyword_fallback", query=query)
         return self._keyword_search(query, items, top_k, history=history)
 
-    def read(self, query: str, history: list[dict] = None, top_k: int = 10) -> list[MemoryItem]:
+    def read(self, query: str, history: list[dict] = None, top_k: int = 10, kinds: list[Kind] = None) -> list[MemoryItem]:
         """
         Primary read interface. Vector-first with keyword fallback.
+
+        By default excludes DOCUMENT chunks from the general agent memory
+        pool; pass kinds=[Kind.DOCUMENT] to query the knowledge base
+        explicitly (as search_knowledge does).
         """
-        return self.recollect(query, history, top_k=top_k)
+        return self.recollect(query, history, kinds=kinds, top_k=top_k)
 
     def filter(
         self,

@@ -37,6 +37,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from agents.memory import Memory
 from agents.artifacts import ArtifactStore
+from agents.schemas import Kind
 
 MAX_SEARCH_RESULTS = 5  # hard cap — Tavily prices per result
 
@@ -358,10 +359,13 @@ def _read_for_index(path: str) -> tuple[str, str]:
 @mcp.tool()
 def index_document(path: str, chunk_size: int = 400, overlap: int = 80) -> dict:
     """Chunk a sandbox file or artifact and write the chunks into Memory as
-    fact records, where they become FAISS-searchable for later queries.
+    DOCUMENT records with LLM-generated semantic descriptors, where they
+    become FAISS-searchable for later queries via search_knowledge.
     Use this when the content must be searchable across later turns or runs.
     For one-shot inspection of a file's contents, use read_file.
-    Accepts sandbox file paths or `art:` artifact handles."""
+    Accepts sandbox file paths or `art:` artifact handles.
+    Re-indexing a previously indexed source replaces its chunks (deduped)
+    rather than appending duplicates."""
     text, source = _read_for_index(path)
     if not text.strip():
         return {"ok": True, "path": path, "source": source, "chunks": 0}
@@ -370,28 +374,32 @@ def index_document(path: str, chunk_size: int = 400, overlap: int = 80) -> dict:
     if not chunks:
         return {"ok": True, "path": path, "source": source, "chunks": 0}
 
+    # Dedupe: clear any prior DOCUMENT chunks for this source before re-indexing.
+    removed = _memory.delete_by_source(source)
+
+    path_stem = path if path.startswith("art:") else Path(path).stem
     ids = []
     for i, chunk in enumerate(chunks):
-        preview = chunk[:120].replace("\n", " ")
-        descriptor = f"[{source} chunk {i+1}/{len(chunks)}] {preview}"
-        item = _memory.add_fact(
-            descriptor=descriptor,
-            value={"chunk": chunk, "chunk_index": i, "total_chunks": len(chunks), "source": source},
-            keywords=[Path(path).stem if not path.startswith("art:") else path, f"chunk_{i}"],
+        item = _memory.add_document_chunk(
+            chunk=chunk,
             source=source,
-            run_id="mcp",
+            path_stem=path_stem,
+            chunk_index=i,
+            total_chunks=len(chunks),
         )
         ids.append(item.id)
 
-    return {"ok": True, "path": path, "source": source, "chunks": len(chunks), "memory_ids": ids}
+    return {"ok": True, "path": path, "source": source, "chunks": len(chunks), "memory_ids": ids, "replaced": removed}
 
 
 @mcp.tool()
 def search_knowledge(query: str, k: int = 5) -> list[dict]:
-    """Vector search over previously indexed fact chunks. Use this rather
+    """Vector search over previously indexed document chunks. Use this rather
     than re-fetching or re-reading source files when Memory already
-    contains indexed chunks for the topic."""
-    results = _memory.read(query, top_k=k)
+    contains indexed chunks for the topic. Queries the DOCUMENT kind
+    specifically, so it does not surface the agent's general facts,
+    preferences, or tool outcomes."""
+    results = _memory.read(query, top_k=k, kinds=[Kind.DOCUMENT])
     return [
         {
             "id": item.id,

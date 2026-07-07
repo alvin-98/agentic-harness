@@ -8,6 +8,7 @@ class Kind(str, Enum):
     FACT = "fact"
     TOOL_OUTCOME = "tool_outcome"
     SCRATCHPAD = "scratchpad"
+    DOCUMENT = "document"
 
 
 class MemoryItem(BaseModel):

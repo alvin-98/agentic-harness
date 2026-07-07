@@ -94,6 +94,22 @@ MEMORY_SUMMARIZE_USER_PROMPT = (
 )
 
 
+# Used by Memory.add_document_chunk to denoise indexed document chunks (e.g.
+# arxiv page dumps) into a single semantic sentence that is then embedded and
+# shown to the agent. This is the primary signal-from-noise step for the
+# knowledge base, since raw chunk text is often dominated by navigation chrome.
+MEMORY_DOC_SUMMARIZE_SYSTEM_PROMPT = (
+    "You summarize document chunks into concise semantic descriptors for memory retrieval."
+)
+
+MEMORY_DOC_SUMMARIZE_USER_PROMPT = (
+    "Write ONE concise sentence capturing the substantive content of this document chunk "
+    "(claims, methods, findings, definitions). Ignore navigation, headers, citation lists, "
+    "submission history, and other page boilerplate. If the chunk is almost entirely "
+    "boilerplate with no substantive content, write: \"Boilerplate-only chunk from {source}.\""
+)
+
+
 # ── Perception Prompt ─────────────────────────────────────────────────────────
 # A single system prompt for the single-call Perception. Covers decomposition
 # (iter 1), goal updates (iter 2+), artifact attachment, and goal extension.
