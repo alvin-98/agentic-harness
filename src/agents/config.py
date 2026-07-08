@@ -35,7 +35,7 @@ class LLMConfig:
 # Memory: lightweight extraction & ranking — reasoning off
 MEMORY_EXTRACTION_LLM  = LLMConfig(auto_route="memory", reasoning="off")
 MEMORY_RELEVANCE_LLM   = LLMConfig(auto_route="memory", reasoning="off")
-MEMORY_SUMMARIZE_LLM   = LLMConfig(auto_route="memory", reasoning="off", max_tokens=256)
+MEMORY_SUMMARIZE_LLM   = LLMConfig(auto_route="memory", reasoning="off", max_tokens=512)
 # MEMORY_EXTRACTION_LLM  = LLMConfig(provider="sglang")
 # MEMORY_RELEVANCE_LLM   = LLMConfig(provider="sglang")
 

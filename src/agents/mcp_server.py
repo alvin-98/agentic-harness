@@ -7,7 +7,8 @@ Eleven tools, stdio transport:
     index_document, search_knowledge
 
 web_search:      Tavily primary, DuckDuckGo fallback. Hard-capped at 5 results.
-fetch_url:       crawl4ai only — clean markdown via headless Chromium.
+fetch_url:       crawl4ai for HTML pages; httpx + pypdf for .pdf URLs
+                 (redirect-following download with PDF text extraction).
 index_document:  Chunks a sandbox file or artifact and writes the chunks as
                  fact records into Memory, where they become FAISS-searchable.
 search_knowledge: Vector search over indexed facts.
@@ -30,6 +31,14 @@ from zoneinfo import ZoneInfo
 
 # Allow importing agents package (Memory uses relative imports)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# This process speaks MCP over stdio — stdout is the JSON-RPC transport and
+# must carry ONLY protocol frames.  The LLM gateway client (imported transitively
+# via agents.memory) logs with structlog, whose default PrintLogger writes to
+# stdout.  Re-route structlog to stderr before any import that could trigger a
+# log call, so debug lines like "llm_chat_complete" don't corrupt the stream.
+import structlog
+structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
 
 import httpx
 from ddgs import DDGS
@@ -134,6 +143,46 @@ def _ddg_search(query: str, max_results: int) -> list[dict]:
     ]
 
 
+async def _download_file(url: str, timeout: int = 30) -> dict:
+    """Download a binary file (e.g. PDF) via httpx and extract text.
+
+    Uses httpx with follow_redirects=True to handle 301/302 responses that
+    crawl4ai's headless Chromium pipeline cannot process for non-HTML content.
+    For PDFs, text is extracted with pypdf."""
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        r = client.get(url)
+        r.raise_for_status()
+
+    content_type = r.headers.get("content-type", "")
+    raw_bytes = r.content
+
+    if "pdf" in content_type.lower() or url.lower().endswith(".pdf"):
+        import io
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw_bytes))
+        pages = []
+        for page in reader.pages:
+            pages.append(page.extract_text() or "")
+        text = "\n\n".join(pages)
+        return {
+            "status": r.status_code,
+            "content_type": "application/pdf",
+            "length_bytes": len(text.encode("utf-8")),
+            "text": text,
+            "url": str(r.url),
+        }
+    else:
+        text = raw_bytes.decode("utf-8", errors="replace")
+        return {
+            "status": r.status_code,
+            "content_type": content_type,
+            "length_bytes": len(text.encode("utf-8")),
+            "text": text,
+            "url": str(r.url),
+        }
+
+
 async def _crawl4ai_fetch(url: str) -> dict:
     from crawl4ai import (
         AsyncWebCrawler,
@@ -208,7 +257,10 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
 
 @mcp.tool()
 async def fetch_url(url: str, timeout: int = 20) -> dict:
-    """Fetch boilerplate-pruned markdown from a URL via crawl4ai (headless Chromium). Nav bars, sidebars, and ads are stripped; only main content is returned. Example: fetch_url("https://example.com")."""
+    """Fetch the content of a URL as text. For HTML pages, returns boilerplate-pruned markdown via crawl4ai (headless Chromium) — nav bars, sidebars, and ads are stripped, only main content is returned. For PDFs, downloads via httpx (following redirects) and extracts text with pypdf. PDFs are detected by a .pdf suffix, a /pdf/ path segment (e.g. arxiv.org/pdf/2602.06791), or as a fallback when crawl4ai returns near-empty content for a non-HTML resource. Example: fetch_url("https://example.com"). Example: fetch_url("https://arxiv.org/pdf/2602.06791")."""
+    lower = url.lower()
+    if lower.endswith(".pdf") or "/pdf/" in lower:
+        return await _download_file(url, timeout=timeout)
     return await _crawl4ai_fetch(url)
 
 

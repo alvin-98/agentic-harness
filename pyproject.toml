@@ -199,6 +199,7 @@ dependencies = [
     "sentence-transformers>=5.5.1",
     "rank-bm25>=0.2.2",
     "structlog>=26.1.0",
+    "pypdf>=5.1.0",
 ]
 
 [project.optional-dependencies]

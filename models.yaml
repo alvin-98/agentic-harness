@@ -1573,7 +1573,7 @@ providers:
       structured: true
       type: text
       visible: true
-      rpm_remaining: null
+      rpm_remaining: 984
       rpd_remaining: null
       exhausted: false
     - id: llama-3.3-70b-versatile
@@ -1585,7 +1585,7 @@ providers:
       structured: false
       type: text
       visible: true
-      rpm_remaining: null
+      rpm_remaining: 999
       rpd_remaining: null
       exhausted: false
     - id: meta-llama/llama-prompt-guard-2-22m

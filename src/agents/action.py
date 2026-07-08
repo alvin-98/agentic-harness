@@ -13,15 +13,17 @@ When tool_call.arguments contains a path or url value that starts with art:, Act
 and returns an error string explaining that artifact handles are not paths. This guard exists because 
 TINY-tier Decision models occasionally pass an artifact handle to read_file or fetch_url. The guard 
 blocks the dispatch and returns a clear error that the history records, so the next Perception iteration 
-can mark the goal accordingly.
+can mark the goal accordingly. index_document is exempt from this guard because its _read_for_index 
+helper explicitly resolves art: handles via the artifact store.
 
 When the tool call is a real MCP dispatch, Action awaits session.call_tool(name, arguments=...), 
 collapses the result's content blocks into a single text string, and proceeds with the threshold check.
 
-The MCP server for Session 6 (in mcp_server.py) exposes nine tools: web_search, fetch_url, get_time, 
-currency_convert, read_file, list_dir, create_file, update_file, edit_file. The full inventory and 
-contracts are documented in the server file itself. Decision sees these nine tools as a tool list and 
-picks one when external work is required.
+The MCP server (in mcp_server.py) exposes eleven tools: web_search, fetch_url,
+get_time, currency_convert, read_file, list_dir, create_file, update_file,
+edit_file, index_document, search_knowledge. The full inventory and contracts are documented
+in the server file itself. Decision sees these eleven tools as a tool list and picks one when
+external work is required.
 """
 
 import asyncio
@@ -52,7 +54,7 @@ class Action:
         - Guards against artifact handles being passed as paths/URLs.
         - Stores large results (>4KB) in artifact store.
         """
-        if self._contains_artifact_handle(tool_call.arguments):
+        if tool_call.name != "index_document" and self._contains_artifact_handle(tool_call.arguments):
             error_msg = (
                 f"ERROR: Artifact handles (art:...) are not file paths or URLs. "
                 f"Do not pass them to {tool_call.name}. "
